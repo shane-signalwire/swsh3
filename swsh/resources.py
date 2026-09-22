@@ -449,6 +449,10 @@ CIPHERS = (
 SIP_ENDPOINT_ENCRYPTION = ("default", "required", "optional")
 SIP_GATEWAY_ENCRYPTION = ("required", "optional", "forbidden")
 
+# Probed live against the conferences route: `xlarge` and `huge` are refused
+# with `Size is not included in the list`.
+VIDEO_CONFERENCE_SIZES = ("small", "medium", "large")
+
 # E911 sub-unit kinds, from the create-address request schema.
 E911_ADDRESS_TYPES = (
     "Apartment", "Basement", "Building", "Department", "Floor", "Office",
@@ -818,7 +822,11 @@ RESOURCES: tuple[Resource, ...] = (
     Resource(
         key="flows", title="call flows", namespace="fabric.call_flows", caps="LCRUD",
         group="fabric", columns=("id", "name", "display_name", "created_at"),
-        fields=(_f("name", required=True), _f("display_name")),
+        # Probed live: `{"title": "..."}` alone creates a flow. `name` was
+        # rejected with `Title is required`, and the audit's other three
+        # "required" fields (flow_data, relayml, document_version) are not.
+        fields=(_f("title", required=True,
+                   help="What the flow is called; also its display name."),),
         extras=(
             Extra("V", "versions", "list_versions", spec_op="list_call_flow_versions"),
             Extra("D", "deploy version", "deploy_version", confirm=True,
@@ -902,7 +910,9 @@ RESOURCES: tuple[Resource, ...] = (
         caps="LCRUD", group="fabric",
         columns=("id", "display_name", "relay_application.topic", "created_at"),
         fields=(
-            _f("name"),
+            # Probed live: a create without a name is 422
+            # `missing_required_parameter`. It was declared optional.
+            _f("name", required=True),
             _f("topic", required=True,
                help="The RELAY topic this application subscribes to."),
             _f("call_status_callback_url", label="webhook URL"),
@@ -912,7 +922,13 @@ RESOURCES: tuple[Resource, ...] = (
         key="connectors", title="FreeSWITCH connectors",
         namespace="fabric.freeswitch_connectors", caps="LCRUD", group="fabric",
         columns=("id", "display_name", "freeswitch_connector.name", "created_at"),
-        fields=(_f("name", required=True),),
+        fields=(
+            _f("name", required=True),
+            # Probed live: `Token is required`. Undeclared, so a create from the
+            # form or the CLI could not succeed at all.
+            _f("token", required=True, secret=True,
+               help="Shared secret the FreeSWITCH instance authenticates with."),
+        ),
     ),
     Resource(
         key="fabricaddresses", title="fabric addresses", namespace="fabric.addresses", caps="LR",
@@ -922,10 +938,14 @@ RESOURCES: tuple[Resource, ...] = (
     Resource(
         key="videorooms", title="video rooms", namespace="video.rooms", caps="LCRUD",
         group="video",
-        columns=("id", "name", "display_name", "max_participants", "created_at"),
+        columns=("id", "name", "display_name", "max_members", "created_at"),
         fields=(
             _f("name", required=True), _f("display_name"),
-            _f("max_participants", kind="int"),
+            # Probed live: a create with `max_participants=7` came back with
+            # `max_members: 20` — the default. The value was accepted, ignored
+            # and never mentioned again, which is the worst way for a setting
+            # to fail.
+            _f("max_members", kind="int", label="max participants"),
             _f("quality", kind="choice", choices=("720p", "1080p")),
             _f("record_on_start", kind="bool"),
             _f("join_from"), _f("join_until"), _f("remove_at"),
@@ -973,10 +993,15 @@ RESOURCES: tuple[Resource, ...] = (
     ),
     Resource(
         key="vconf", title="video conferences", namespace="video.conferences", caps="LCRUD",
-        group="video", columns=("id", "name", "display_name", "created_at"),
+        group="video", columns=("id", "name", "display_name", "size", "created_at"),
         fields=(
-            _f("name", required=True), _f("display_name"),
-            _f("max_participants", kind="int"),
+            _f("name", required=True),
+            # Probed live: `Display Name is required`; it was optional.
+            _f("display_name", required=True),
+            # `max_participants` was accepted and dropped — a conference row
+            # carries no such key at all. Capacity here is a size band.
+            _f("size", kind="choice", choices=VIDEO_CONFERENCE_SIZES,
+               help="Capacity band. A conference has no numeric participant cap."),
         ),
         api="video-api",
         extras=(
@@ -997,7 +1022,8 @@ RESOURCES: tuple[Resource, ...] = (
         caps="LCRUD", group="ai",
         columns=("id", "name", "status", "chunks", "created_at"),
         fields=(
-            _f("url", help="Source URL to ingest."),
+            # Probed live: `Url is required`, and it must be http(s).
+            _f("url", required=True, help="Source URL to ingest. http(s) only."),
             _f("name"),
             _f("tags", kind="list", help="Comma separated."),
         ),
@@ -1016,8 +1042,28 @@ RESOURCES: tuple[Resource, ...] = (
     ),
     Resource(
         key="sipprofile", title="SIP profile", namespace="sip_profile", caps="RU",
-        group="other", columns=("id", "domain", "username"),
-        fields=(_f("domain"), _f("username"), _f("default_caller_id")),
+        group="other",
+        columns=("domain", "domain_identifier", "default_encryption",
+                 "default_send_as", "default_outbound_policy"),
+        # Read off the live record: the profile carries exactly these seven
+        # keys. `username` and `default_caller_id` were declared here and are
+        # not among them — neither name exists on this route, so editing either
+        # sent a value nowhere and reported success. The real caller id is
+        # `default_send_as`.
+        #
+        # The write side is unverified on purpose: this is one project-wide
+        # record, and probing it means changing the SIP defaults of whatever
+        # space the probe runs against. Naming the fields correctly already
+        # removes the silent drop.
+        fields=(
+            _f("domain_identifier",
+               help="The per-space SIP identifier; `domain` is built from it."),
+            _f("default_encryption", kind="choice", choices=SIP_ENDPOINT_ENCRYPTION),
+            _f("default_codecs", kind="multi", choices=CODECS, open_ended=True),
+            _f("default_ciphers", kind="multi", choices=CIPHERS, open_ended=True),
+            _f("default_send_as", label="default caller id"),
+            _f("default_outbound_policy"),
+        ),
         help="A single project-wide record rather than a collection.",
     ),
 
@@ -1125,7 +1171,14 @@ RESOURCES: tuple[Resource, ...] = (
             "delete": "delete_domain_application",
         },
         columns=("id", "name", "domain", "created_at"),
-        fields=(_f("name", required=True), _f("domain")),
+        fields=(
+            _f("name", required=True),
+            # Probed live: `Identifier is required`. It is the label the SIP
+            # domain is built from, and it was not declared at all.
+            _f("identifier", required=True,
+               help="Subdomain label, e.g. `support` for support.<space>."),
+            _f("domain"),
+        ),
     ),
 
     # Phone number lookup + MFA (relay-rest number tools).

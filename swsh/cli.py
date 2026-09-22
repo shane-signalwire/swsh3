@@ -2278,8 +2278,14 @@ def _add_get(sub: typer.Typer, resource: resources.Resource) -> None:
             _raw_refuse("--full and --raw do not go together: --full follows "
                         "the routing across several requests, and --raw shows "
                         "one response.")
-        resource_id = await _resolve_id(client, resource, kw["identifier"])
-        row = await client.invoke(resource, "read", resource_id=resource_id)
+        # A singleton's read route carries no `{id}`: the project has exactly
+        # one SIP profile and asking for it needs no identifier. `sw sipprofile
+        # get` demanded one anyway and there was none to give.
+        if resource.is_singleton:
+            row = await client.invoke(resource, "read")
+        else:
+            resource_id = await _resolve_id(client, resource, kw["identifier"])
+            row = await client.invoke(resource, "read", resource_id=resource_id)
         # Before the body-fill below and before any shaping: --raw is the record
         # as the platform sent it, not as sw completes it.
         if _emit_raw(row):
@@ -2309,8 +2315,9 @@ def _add_get(sub: typer.Typer, resource: resources.Resource) -> None:
         ui.console.print(ui.detail_table(
             row, title=ui.detail_title(row, resource.id_field)))
 
-    params = [_id_param(resource)]
-    doc = f"Fetch one of the {resource.title} {_by_what(resource)}."
+    params = [] if resource.is_singleton else [_id_param(resource)]
+    doc = (f"Show the {resource.title}." if resource.is_singleton
+           else f"Fetch one of the {resource.title} {_by_what(resource)}.")
     if resource.routing:
         channels = " and ".join(r.channel for r in resource.routing)
         params.append(_param("full", bool, typer.Option(

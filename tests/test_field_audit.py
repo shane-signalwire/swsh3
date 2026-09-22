@@ -4,10 +4,17 @@ The catalog carries each operation's request parameters, so a resource's declare
 `Field` set can be checked against the real thing without a live space. This is
 the gate that keeps them from drifting apart again.
 
-It is a ratchet, not a pass/fail on the whole registry: 31 of 38 writable
-resources still differ, and fixing them all at once was not the plan. What these
-tests forbid is going backwards — a resource that matches the documentation must
-keep matching, and no writable resource may go back to having no fields at all.
+It is a ratchet, not a pass/fail on the whole registry: most writable resources
+still differ, and fixing them all at once was never the plan. What these tests
+forbid is going backwards — a resource that matches the documentation must keep
+matching, and no writable resource may go back to having no fields at all.
+
+Matching the documentation is *not* the goal, and this file must not be read as
+one. The audit compares against a shared schema that over-reports required
+fields badly: it says `sip` is missing three of them, when a SIP endpoint
+creates fine without any. `scripts/probe_fields.py` asks the platform instead,
+and where the two disagree the platform wins — see
+`test_resources.py::TestVerifiedAgainstLiveProject`.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ CLEAN = {
     "addresses",    # E911: was `name`/`display_name`, neither of which exists
     "chattoken",
     "orders",
+    "relayapps",    # probed live: `name` is required, and was declared optional
     "pubsubtoken",
     "sipaddr",      # filled out for the lab: it is how a resource gets a URI
     "subcreds",     # matches legacy's live-verified _add_sip_arguments

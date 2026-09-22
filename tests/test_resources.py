@@ -232,6 +232,68 @@ class TestVerifiedAgainstLiveProject:
         for name in ("encryption", "ciphers", "codecs"):
             assert fields[name].required, name
 
+    def test_what_the_create_routes_actually_require(self):
+        """Probed with `scripts/probe_fields.py` on 2026-09-22: each of these
+        was declared optional or not at all, and the route answered 422
+        `missing_required_parameter` for it.
+
+        The field *audit* over-reports badly — it reads a shared schema and
+        claims `sip` needs three more fields, when a SIP endpoint creates fine
+        from a name, a username and a password. Only what the platform refused
+        is recorded here.
+        """
+        required = {
+            "relayapps": "name",
+            "connectors": "token",
+            "datasphere": "url",
+            "domains": "identifier",
+            "vconf": "display_name",
+        }
+        for key, name in required.items():
+            fields = {f.name: f for f in res.get(key).form_fields("create")}
+            assert name in fields, (key, name)
+            assert fields[name].required, (key, name)
+
+    def test_a_call_flow_is_created_by_title_not_by_name(self):
+        """`{"title": "..."}` alone creates one. `name` was refused with
+        `Title is required`, and flow_data/relayml/document_version — which the
+        audit calls required — are not."""
+        fields = [f.name for f in res.get("flows").form_fields("create")]
+        assert "title" in fields
+        assert "name" not in fields
+
+    def test_a_video_room_caps_members_not_participants(self):
+        """`max_participants=7` was accepted and came back `max_members: 20`,
+        the default: the value was taken, dropped, and never mentioned."""
+        fields = [f.name for f in res.get("videorooms").form_fields("create")]
+        assert "max_members" in fields
+        assert "max_participants" not in fields
+
+    def test_a_video_conference_is_sized_not_counted(self):
+        """A conference row carries no participant cap at all; `size` is the
+        control, and `xlarge` is refused."""
+        fields = {f.name: f for f in res.get("vconf").form_fields("create")}
+        assert "max_participants" not in fields
+        assert fields["size"].choices == res.VIDEO_CONFERENCE_SIZES
+        assert res.VIDEO_CONFERENCE_SIZES == ("small", "medium", "large")
+
+    def test_the_sip_profile_is_named_after_what_it_carries(self):
+        """It declared `username` and `default_caller_id`; the record has
+        neither, so editing either sent a value nowhere and reported success.
+        The real caller id is `default_send_as`."""
+        fields = {f.name for f in res.get("sipprofile").fields}
+        assert "username" not in fields and "default_caller_id" not in fields
+        assert {"domain_identifier", "default_send_as", "default_encryption",
+                "default_codecs", "default_ciphers"} <= fields
+
+    def test_a_subscriber_really_does_spell_it_time_zone(self):
+        """The audit says the documented name is `timezone` and wants this
+        changed. The live row carries `time_zone`; the audit is wrong, and this
+        is here so nobody 'fixes' it into a field that goes nowhere."""
+        fields = {f.name for f in res.get("subscribers").fields}
+        assert "time_zone" in fields
+        assert "timezone" not in fields
+
     def test_token_scopes_match_the_live_token_form(self):
         assert set(res.TOKEN_SCOPES) == {
             "calling", "messaging", "video", "fax", "chat", "pubsub", "numbers",
