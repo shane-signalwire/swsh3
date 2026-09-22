@@ -171,6 +171,38 @@ def _named_fields(body: object) -> set[str]:
     return found
 
 
+# Deleting through one route does not always remove everything the create made.
+# A video room deleted at `/api/video/rooms/{id}` leaves its Fabric
+# conference-room record behind, so two `sw-probe-videorooms` rows survived a
+# run that reported every object cleaned. Anything this script creates is this
+# script's to remove, so it goes looking afterwards rather than trusting the
+# delete it already issued.
+SHADOWS = {"videorooms": "confrooms"}
+
+
+async def residue(probed: tuple[str, ...]) -> list[str]:
+    """Rows named after this script that survived the cleanup."""
+    lines: list[str] = []
+    async with SwshClient(resolve()) as client:
+        for key in {SHADOWS[k] for k in probed if k in SHADOWS}:
+            resource = res.get(key)
+            if resource is None:
+                continue
+            try:
+                payload = await client.invoke(resource, "list")
+            except SwshError:
+                continue
+            stale = [row for row in res.unwrap(payload, resource.data_key)
+                     if STAMP in str(row)]
+            for row in stale:
+                lines.append(f"  RESIDUE  {key:14} {row.get('id')}  "
+                             f"{row.get('display_name') or row.get('name')}")
+    if lines:
+        lines.append("  delete these with `sw <resource> delete <id> --yes`; a "
+                     "create can leave a record the matching delete does not.")
+    return lines
+
+
 async def main() -> None:
     as_json = "--json" in sys.argv
     only: tuple[str, ...] = SAFE
@@ -218,6 +250,8 @@ async def main() -> None:
     left = [r["key"] for r in results if r["status"] == "accepted" and not r.get("cleaned")]
     if left:
         print(f"\nnot cleaned up, delete by hand: {', '.join(left)}")
+    for line in await residue(only):
+        print(line)
     short = [r["key"] for r in results if r["status"] == "rejected"]
     print(f"\n{len(results)} probed, {len(short)} declare too few required fields"
           f"{': ' + ', '.join(short) if short else ''}")

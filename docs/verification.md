@@ -140,6 +140,20 @@ Pinned in `tests/test_resources.py::TestVerifiedAgainstLiveProject` and
   is indistinguishable from a broken client. `edge_report` checks for it with a
   single unauthenticated `OPTIONS` per edge and never retries.
 
+## A delete does not always remove everything a create made
+
+Found while probing: a video room created at `/api/video/rooms` also
+materialises a Fabric **conference room**, and deleting the room does not
+remove it. A probe run that reported every object cleaned left two
+`sw-probe-videorooms` rows in `sw confrooms list`.
+
+`probe_fields.py` now looks for that residue afterwards and names what to
+delete, rather than trusting the delete it already issued. If you add a
+resource whose create has a shadow like this, add it to `SHADOWS` in that
+script. The same class of thing is why `client.verify_compat` exists — an
+earlier probe created a LaML bin, which orphaned a Fabric `cxml_script` and
+permanently broke `fabric.resources.list` on a live project.
+
 ## The manual test plans
 
 `test_plans/` holds the manual QA checklists. **Two of the nineteen are current**
