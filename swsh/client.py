@@ -17,6 +17,7 @@ project using a create-then-delete on a LaML bin, which touches nothing real.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from collections.abc import Iterable
@@ -60,10 +61,10 @@ class SwshClient:
     """
 
     def __init__(self, profile: Profile, *, compat_encoding: CompatEncoding = "form",
-                 timeout: float = 30.0):
+                 timeout: float | None = None):
         self.profile = profile
         self.compat_encoding: CompatEncoding = compat_encoding
-        self._timeout = timeout
+        self._timeout = default_timeout() if timeout is None else timeout
         self._rest: Any | None = None
         self._http: httpx.AsyncClient | None = None
         self._selector: Any | None = None
@@ -90,6 +91,7 @@ class SwshClient:
                 token=self.profile.token,
                 host=self.profile.host,
             )
+            _give_it_a_timeout(self._rest, self._timeout)
         return self._rest
 
     @property
@@ -133,6 +135,36 @@ class SwshClient:
         except Exception as exc:  # SignalWireRestError and anything requests raises
             raise _translate(exc, path) from exc
 
+    # Attempts, not retries: 3 means the original plus two more. Past that a
+    # command that has already waited seconds is better off telling someone
+    # than waiting more.
+    ATTEMPTS = 3
+    RETRY_ON = frozenset({429, 500, 502, 503, 504})
+    # A 5xx may have been processed before it failed, so replaying a create
+    # could make two of something. A 429 is different: the platform is saying
+    # it did *not* process the request, so any method is safe to send again.
+    REPLAYABLE = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+
+    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """One request, retried when the platform says to try again.
+
+        A 429 used to surface as `request failed` and exit 1 — a rate limit
+        reported as a dead end, when the one thing the platform told us was how
+        long to wait. `Retry-After` is honoured when it is sent; otherwise the
+        wait doubles, which is what keeps a burst of parallel list pages from
+        arriving back in step.
+        """
+        delay = 0.5
+        for attempt in range(1, self.ATTEMPTS + 1):
+            resp = await self.http.request(method, path, **kwargs)
+            if resp.status_code not in self.RETRY_ON or attempt == self.ATTEMPTS:
+                return resp
+            if resp.status_code != 429 and method not in self.REPLAYABLE:
+                return resp
+            await asyncio.sleep(_retry_after(resp) or delay)
+            delay = min(delay * 2, 8.0)
+        return resp
+
     async def rest_call(self, method: str, path: str, *, params: dict[str, Any] | None = None,
                         body: dict[str, Any] | None = None) -> dict[str, Any]:
         """Issue a raw REST call against the space and normalise the response.
@@ -141,7 +173,7 @@ class SwshClient:
         method (e911, WhatsApp, …) reach the platform through here instead of
         ``call_sdk``. Everything downstream sees the same dict either way.
         """
-        resp = await self.http.request(
+        resp = await self._send(
             method.upper(), path, params=_clean(params) if params else None,
             json=_clean(body) if body else None,
         )
@@ -171,7 +203,7 @@ class SwshClient:
             request_kwargs["json"] = (
                 _clean(json_body) if isinstance(json_body, dict) else json_body
             )
-        return await self.http.request(
+        return await self._send(
             method.upper(),
             path,
             params=_clean(params) if params else None,
@@ -786,15 +818,150 @@ def _unwrap(resp: httpx.Response) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {"data": payload}
 
 
+# The shapes the platform actually sends an error in. A validation failure is a
+# *list of objects*, one per offending field, which `f"{body[key]}"` rendered as
+# a Python repr:
+#
+#   error: [{'type': 'validation_error', 'code': 'missing_required_parameter',
+#   'message': 'Encryption is required', 'attribute': 'encryption', 'url':
+#   'https://developer.signalwire.com/...'}] (HTTP 422)
+#
+# Everything a person needs is in there and none of it is readable. The field
+# name is the single most useful token, because it maps straight back to the
+# `--set` key that caused it.
+_ERROR_KEYS = ("message", "error", "detail", "errors", "error_message")
+
+
+def _error_line(item: Any) -> str:
+    """One problem, as a line: ``field: what is wrong (code)``."""
+    if not isinstance(item, dict):
+        return str(item)
+    text = str(item.get("message") or item.get("detail") or item.get("error") or "").strip()
+    field = item.get("attribute") or item.get("field") or item.get("parameter")
+    code = item.get("code")
+    if not text:
+        # Nothing human in it; the code is better than an empty string.
+        text = str(code or item)
+        code = None
+    # `Encryption is required` already names the field, so do not say it twice.
+    if field and str(field).lower().replace("_", "") not in text.lower().replace("_", ""):
+        text = f"{field}: {text}"
+    if code and str(code) not in text:
+        text = f"{text} ({code})"
+    return text
+
+
+def error_doc_urls(body: Any) -> list[str]:
+    """Documentation links the platform attached, for a hint line.
+
+    They belong under the message rather than inside it: a 200-character URL in
+    the middle of a sentence is what made these unreadable in the first place.
+    """
+    if not isinstance(body, dict):
+        return []
+    items = next((body[k] for k in _ERROR_KEYS if k in body), None)
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return []
+    seen: list[str] = []
+    for item in items:
+        url = item.get("url") if isinstance(item, dict) else None
+        if url and url not in seen:
+            seen.append(str(url))
+    return seen
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """`Retry-After` in seconds, when the platform sent a usable one.
+
+    The header is defined as either a number of seconds or an HTTP date. Only
+    the numeric form is honoured here: a date needs clock agreement to mean
+    anything, and every SignalWire 429 seen so far sends seconds. A value that
+    is neither falls through to the backoff rather than being guessed at.
+    """
+    raw = resp.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    # A server asking for ten minutes is not something to sit through silently.
+    return seconds if 0 <= seconds <= 60 else None
+
+
+def default_timeout() -> float:
+    """Seconds to wait on the platform, from ``SWSH_TIMEOUT`` or 30."""
+    raw = os.environ.get("SWSH_TIMEOUT", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    return value if value > 0 else 30.0
+
+
+def _give_it_a_timeout(rest: Any, seconds: float) -> None:
+    """Put a timeout on the SDK's session, which ships without one.
+
+    `RestClient` takes no timeout argument and its `requests.Session` is created
+    bare, so an SDK-backed call waits for as long as the far end keeps the
+    socket open: no output, no error, nothing to interrupt but the process.
+    Since there is no supported seam, this wraps the session's own `request` and
+    supplies a default the caller can still override.
+
+    Reaching into another package's privates is a thing to do carefully, so it
+    is best-effort by construction: if the SDK reshapes, the wrap is skipped and
+    behaviour is exactly what it is today, rather than an AttributeError on the
+    first call.
+    """
+    try:
+        session = rest._http._session
+        original = session.request
+    except AttributeError:
+        return
+
+    if getattr(original, "_swsh_timed", False):
+        return
+
+    def request(method: str, url: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("timeout", seconds)
+        return original(method, url, **kwargs)
+
+    request._swsh_timed = True  # type: ignore[attr-defined]
+    session.request = request  # type: ignore[method-assign]
+
+
 def _describe(status: int, body: Any) -> str:
+    """What went wrong, in words, whatever shape the platform said it in."""
     if isinstance(body, dict):
-        for key in ("message", "error", "detail", "errors"):
-            if key in body:
-                return f"{body[key]}"
+        for key in _ERROR_KEYS:
+            if key not in body:
+                continue
+            value = body[key]
+            if isinstance(value, list) and value:
+                return "; ".join(_error_line(item) for item in value)
+            if isinstance(value, dict):
+                return _error_line(value)
+            if value:
+                return str(value)
     if status == 401:
         return "authentication failed: check project id and api token"
+    if status == 403:
+        return "forbidden: this token may lack the scope for that call"
     if status == 404:
         return "not found: check the resource id and that the space is correct"
+    if status == 409:
+        return "conflict: something with those values already exists"
+    if status == 429:
+        return "rate limited: too many requests"
+    # Never a bare "request failed" over a body that said something. A 500 with
+    # an HTML page is still more use than three words that name nothing.
+    if isinstance(body, dict) and body:
+        detail = body.get("raw") or body
+        return f"HTTP {status}: {str(detail)[:200]}"
+    if status and status >= 500:
+        return "the platform returned a server error; try again shortly"
     return "request failed"
 
 

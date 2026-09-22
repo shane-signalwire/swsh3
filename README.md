@@ -22,7 +22,7 @@
 - [Command line](#command-line)
   - [The shape of a command](#the-shape-of-a-command)
   - [Finding a row without knowing its id](#finding-a-row-without-knowing-its-id)
-  - [`--json`, `--raw` and `--profile`](#--json---raw-and---profile)
+  - [`--json`, `--raw`, `--profile` and `--timeout`](#--json---raw---profile-and---timeout)
   - [Following a number's routing](#following-a-numbers-routing)
   - [Calls](#calls)
   - [`sw api` — the escape hatch](#sw-api--the-escape-hatch)
@@ -210,7 +210,7 @@ updated Fax Number (b5cf76f4-1d3e-4a90-9c22-6b0c1f8e7a45)
 anything, and the confirmation prints each `handle → id` pair — because
 "release 2 phone numbers?" is not a question anyone can answer.
 
-### `--json`, `--raw` and `--profile`
+### `--json`, `--raw`, `--profile` and `--timeout`
 
 These belong to commands, not to `sw` itself, and their order does not matter:
 
@@ -238,6 +238,12 @@ sw numbers get "Fax Number" --raw | jq '.'
 `--raw` implies `--json`. A command with no single response — `sw listen`, for
 instance — refuses `--raw` *before* it runs anything, rather than doing the work
 with the output suppressed and then admitting it cannot answer.
+
+`--timeout` is how long to wait on the platform, 30 seconds by default, and
+`SWSH_TIMEOUT` sets it for a whole shell. A 429 or a 5xx on a request that is
+safe to send again is retried twice with a widening gap, honouring the
+platform's own `Retry-After` when it sends one; a create is never replayed,
+because a 5xx may have been processed before it failed.
 
 Without `--json`, a single row prints as a field/value table rather than a blob:
 every key the API sent, in the order it sent them, `-` for a null and `""` for an

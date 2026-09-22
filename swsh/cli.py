@@ -29,7 +29,7 @@ from rich.text import Text
 from typer._completion_classes import completion_init as _completion_init
 
 from . import __version__, config, prompts, resources, routing, spec, ui
-from .client import SwshClient, SwshError, _describe
+from .client import SwshClient, SwshError, _describe, error_doc_urls
 from .client import next_page as client_next_page
 from .config import (
     ConfigError,
@@ -152,6 +152,7 @@ class Ctx:
     as_json: bool = False
     raw: bool = False
     raw_emitted: bool = False
+    timeout: float | None = None
 
 
 def _profile() -> Profile:
@@ -183,6 +184,7 @@ def _profile() -> Profile:
 _JSON_PARAM = "_json_out"
 _PROFILE_PARAM = "_profile_name"
 _RAW_PARAM = "_raw_out"
+_TIMEOUT_PARAM = "_timeout"
 
 
 def _global_params() -> list[inspect.Parameter]:
@@ -205,6 +207,12 @@ def _global_params() -> list[inspect.Parameter]:
             _PROFILE_PARAM, inspect.Parameter.KEYWORD_ONLY, annotation=str | None,
             default=typer.Option(None, "--profile", "-P", help="Credential profile."),
         ),
+        inspect.Parameter(
+            _TIMEOUT_PARAM, inspect.Parameter.KEYWORD_ONLY, annotation=float | None,
+            default=typer.Option(None, "--timeout",
+                                 help="Seconds to wait on the platform. "
+                                      "Also SWSH_TIMEOUT. Default 30."),
+        ),
     ]
 
 
@@ -225,6 +233,7 @@ def _absorb_global_flags(kwargs: dict[str, Any]) -> None:
     profile = kwargs.pop(_PROFILE_PARAM, None)
     if profile:
         Ctx.profile_name = profile
+    Ctx.timeout = kwargs.pop(_TIMEOUT_PARAM, None)
 
 
 # `--raw`: the response, not a view of it.
@@ -388,7 +397,8 @@ def coro(fn):
         _raw_guard(fn)
 
         async def runner():
-            async with SwshClient(_LazyProfile()) as client:  # type: ignore[arg-type]
+            async with SwshClient(_LazyProfile(),  # type: ignore[arg-type]
+                                  timeout=Ctx.timeout) as client:
                 return await fn(client, *args, **kwargs)
 
         try:
@@ -403,6 +413,11 @@ def coro(fn):
             raise
         except SwshError as exc:
             ui.fail(str(exc))
+            # The platform attaches a doc link per offending field. It goes
+            # under the message, not inside it: a 200-character URL in the
+            # middle of a sentence is half of why these were unreadable.
+            for url in error_doc_urls(exc.body)[:3]:
+                ui.hint(url)
             raise typer.Exit(1) from exc
         except KeyboardInterrupt:
             raise typer.Exit(130) from None
@@ -473,6 +488,7 @@ def main_callback(
     Ctx.as_json = False
     Ctx.raw = False
     Ctx.raw_emitted = False
+    Ctx.timeout = None
     # `--version` is an option, not a command, so the callback must run without a
     # subcommand; when there is genuinely nothing to do, fall back to help.
     if ctx.invoked_subcommand is None:
