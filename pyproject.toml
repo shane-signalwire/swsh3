@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "swsh"
-version = "3.0.0"
+# Read from swsh/__init__.py so there is one place to change it. Declared in
+# two files with nothing keeping them in step, they drift, and the first sign
+# is a wheel whose metadata disagrees with `sw --version`.
+dynamic = ["version"]
 description = "sw: the SignalWire CLI, a live TUI cockpit, and a callback sink."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +18,7 @@ authors = [
 ]
 keywords = ["signalwire", "cli", "tui", "voice", "telephony", "webhooks"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -62,6 +65,9 @@ Issues = "https://github.com/shane-signalwire/swsh3/issues"
 # One console script. The interactive shell the old `swsh` binary stood for is
 # `sw sh` — same letters, one command.
 sw = "swsh.cli:main"
+
+[tool.hatch.version]
+path = "swsh/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["swsh"]

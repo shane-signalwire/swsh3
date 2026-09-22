@@ -4,7 +4,7 @@ The catalog carries each operation's request parameters, so a resource's declare
 `Field` set can be checked against the real thing without a live space. This is
 the gate that keeps them from drifting apart again.
 
-It is a ratchet, not a pass/fail on the whole registry: most writable resources
+It is a ratchet, not a pass/fail on the whole registry: 29 of 38 writable resources
 still differ, and fixing them all at once was never the plan. What these tests
 forbid is going backwards — a resource that matches the documentation must keep
 matching, and no writable resource may go back to having no fields at all.

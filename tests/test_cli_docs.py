@@ -553,3 +553,29 @@ class TestCatalogCommandsNeedNoCredentials:
         # should not demand a token. The space is still needed to show the URL.
         result = runner.invoke(cli.app, ["api", "list_subscribers", "--dry-run"])
         assert result.exit_code in (0, 2)  # 2 only because the URL needs a space
+
+
+class TestTheVersionHasOneSourceOfTruth:
+    """It was declared in `pyproject.toml` and `swsh/__init__.py` with nothing
+    keeping them in step. The first sign of a drift is a wheel whose metadata
+    disagrees with what `sw --version` prints, which nobody looks at."""
+
+    def test_the_package_and_the_distribution_agree(self):
+        import importlib.metadata
+
+        from swsh import __version__
+        assert importlib.metadata.version("swsh") == __version__
+
+    def test_pyproject_does_not_declare_it_a_second_time(self):
+        import tomllib
+
+        pyproject = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes().decode())
+        assert "version" not in pyproject["project"]
+        assert "version" in pyproject["project"]["dynamic"]
+
+    def test_what_sw_version_prints_is_that_same_string(self):
+        from swsh import __version__
+        result = runner.invoke(cli.app, ["--version"])
+        assert result.exit_code == 0
+        assert __version__ in result.output

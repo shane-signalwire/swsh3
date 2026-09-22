@@ -1558,7 +1558,7 @@ _REST_MIGRATION: dict[str, tuple[str, dict[str, str]]] = {
                                 "read": "get_document", "update": "update_document",
                                 "delete": "delete_document"}),
     # The `fax` resource is fax *logs*. Sending a fax is a compatibility-api
-    # operation and is currently excluded; see docs/phase1-audit.md.
+    # operation and is currently excluded; `sw api send_fax` reaches it.
     "fax": ("fax-api", {"list": "list_fax_logs", "read": "get_fax_log"}),
     "flows": ("fabric-api", {"list": "list_call_flows", "create": "create_call_flow",
                              "read": "get_call_flow", "update": "update_call_flow",

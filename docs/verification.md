@@ -7,7 +7,7 @@ against a live space.
 ## Automated, no credentials needed
 
 ```bash
-.venv/bin/python -m pytest -q            # 800 tests
+.venv/bin/python -m pytest -q            # 860 tests
 .venv/bin/ruff check .
 .venv/bin/python scripts/audit_fields.py --check
 .venv/bin/python scripts/audit_secrets.py --check
@@ -142,9 +142,12 @@ Pinned in `tests/test_resources.py::TestVerifiedAgainstLiveProject` and
 
 ## The manual test plans
 
-`test_plans/` holds the manual QA checklists. `tui.md` is written for `sw sh` as
-it is today. The other files were carried over from swsh 2.0 and **are written
-for the cmd2 REPL** — bare commands like `sip_gateway list --json` typed at a
-prompt — so they do not run as-is against `sw`. They remain valuable as the
-record of what was verified live and as the source for retargeted cases, but
-translating them (`sip_gateway list` → `sw gateways list`) is outstanding work.
+`test_plans/` holds the manual QA checklists. **Two of the nineteen are current**
+— `tui.md` and `phone_number.md`, both written for `sw` as it is today. The
+other seventeen were carried over from swsh 2.0 and are written for the cmd2
+REPL: bare commands like `sip_gateway list --json` typed at a prompt, which do
+not run as-is against `sw`. They remain valuable as the record of what was
+verified live and as the source for retargeted cases, but translating them is
+outstanding work, and it is not mechanical — the resources were renamed too
+(`sip_gateway` → `gateways`, `fifo_queue` → `queues`, `laml_app` → `cxmlapps`,
+`video` → four separate resources).

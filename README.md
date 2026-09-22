@@ -518,7 +518,7 @@ every endpoint.
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
-.venv/bin/python -m pytest -q            # 800 tests
+.venv/bin/python -m pytest -q            # 860 tests
 .venv/bin/ruff check .
 
 python scripts/audit_fields.py           # registry fields vs documented parameters
@@ -542,7 +542,9 @@ python scripts/probe_invite_uri.py       # what actually goes on the wire
 python scripts/probe_sip_edges.py <domain>   # which SIP edges answer, per transport
 ```
 
-`test_plans/` holds manual QA checklists, one per command group.
+`test_plans/` holds manual QA checklists; two of the nineteen (`tui.md`,
+`phone_number.md`) are written for `sw` as it is today and the rest for the
+retired cmd2 REPL.
 [`docs/verification.md`](docs/verification.md) sets out what each kind of check
 actually proves and what has been confirmed against a live space;
 [`docs/field-audit.md`](docs/field-audit.md) is generated
@@ -557,6 +559,16 @@ coverage-gate row.
 
 Before adding one, ask whether `sw api` is enough. A one-off call, or an endpoint
 used by one script, does not need a registry entry.
+
+### Contributing
+
+CI runs the suite, `ruff` and the secret audit on 3.11 through 3.14 for every
+push and pull request (`.github/workflows/ci.yml`). It needs no credentials,
+and none are configured: the suite stubs HTTP at the transport boundary and
+runs the cockpit headless.
+
+Notable changes go in [CHANGELOG.md](CHANGELOG.md), written for someone using
+the tool rather than reading the source.
 
 ### Layout
 

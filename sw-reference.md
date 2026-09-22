@@ -36,6 +36,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - backend: rest · relay-rest
 - fields:
   - `name` (text) *(required)*
+  - `identifier` (text) *(required)* — Subdomain label, e.g. `support` for support.<space>.
   - `domain` (text)
 
 ### `groups` — number groups
@@ -132,9 +133,9 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 ### `brands` — 10DLC brands
 
 - operations: `LCR`  (L=list C=create R=read U=update D=delete)
-- commands: `sw brands list`, `sw brands create`, `sw brands get`, `sw brands campaigns`
+- commands: `sw brands list`, `sw brands create`, `sw brands get`, `sw brands campaigns`, `sw brands orders`
 - backend: rest · relay-rest
-- Brand registrations; each brand lists its campaigns.
+- Brand registrations; each brand lists its campaigns, and each campaign its number orders.
 - fields:
   - `name` (text) *(required)*
   - `company_name` (text)
@@ -150,7 +151,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 ### `campaigns` — 10DLC campaigns
 
 - operations: `RU`  (L=list C=create R=read U=update D=delete)
-- commands: `sw campaigns list`, `sw campaigns create`, `sw campaigns get`, `sw campaigns update`, `sw campaigns assigned-numbers`, `sw campaigns unassign-number`
+- commands: `sw campaigns get`, `sw campaigns update`, `sw campaigns assigned-numbers`, `sw campaigns unassign-number`
 - backend: rest · relay-rest
 - fields:
   - `name` (text) *(required)*
@@ -158,7 +159,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 ### `orders` — number orders
 
 - operations: `LCR`  (L=list C=create R=read U=update D=delete)
-- commands: `sw orders list`, `sw orders create`, `sw orders get`
+- commands: `sw orders get`
 - backend: rest · relay-rest
 - fields:
   - `phone_numbers` (list) — E.164 numbers to assign to the campaign.
@@ -234,7 +235,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - commands: `sw datasphere list`, `sw datasphere create`, `sw datasphere get`, `sw datasphere update`, `sw datasphere delete`, `sw datasphere chunks`, `sw datasphere search`
 - backend: rest · datasphere-api
 - fields:
-  - `url` (text) — Source URL to ingest.
+  - `url` (text) *(required)* — Source URL to ingest. http(s) only.
   - `name` (text)
   - `tags` (list) — Comma separated.
 
@@ -258,6 +259,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - backend: rest · fabric-api
 - fields:
   - `name` (text) *(required)*
+  - `token` (text) *(required)* — Shared secret the FreeSWITCH instance authenticates with.
 
 ### `cxml` — cXML scripts
 
@@ -301,8 +303,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - commands: `sw flows list`, `sw flows create`, `sw flows get`, `sw flows update`, `sw flows delete`, `sw flows versions`, `sw flows deploy-version`, `sw flows addresses`
 - backend: rest · fabric-api
 - fields:
-  - `name` (text) *(required)*
-  - `display_name` (text)
+  - `title` (text) *(required)* — What the flow is called; also its display name.
 
 ### `gateways` — SIP gateways
 
@@ -322,7 +323,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - commands: `sw relayapps list`, `sw relayapps create`, `sw relayapps get`, `sw relayapps update`, `sw relayapps delete`, `sw relayapps addresses`
 - backend: rest · fabric-api
 - fields:
-  - `name` (text)
+  - `name` (text) *(required)*
   - `topic` (text) *(required)* — The RELAY topic this application subscribes to.
   - `call_status_callback_url` (text)
 
@@ -369,7 +370,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 ### `subcreds` — subscriber SIP credentials
 
 - operations: `CRUD`  (L=list C=create R=read U=update D=delete)
-- commands: `sw subcreds create`, `sw subcreds get`, `sw subcreds update`, `sw subcreds delete`
+- commands: `sw subcreds get`, `sw subcreds update`, `sw subcreds delete`
 - backend: rest · fabric-api
 - SIP credentials under a subscriber (drill from Subscribers).
 - fields:
@@ -452,8 +453,8 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - backend: rest · video-api
 - fields:
   - `name` (text) *(required)*
-  - `display_name` (text)
-  - `max_participants` (int)
+  - `display_name` (text) *(required)*
+  - `size` (choice=['small', 'medium', 'large']) — Capacity band. A conference has no numeric participant cap.
 
 ### `videorooms` — video rooms
 
@@ -463,7 +464,7 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - fields:
   - `name` (text) *(required)*
   - `display_name` (text)
-  - `max_participants` (int)
+  - `max_members` (int)
   - `quality` (choice=['720p', '1080p'])
   - `record_on_start` (bool)
   - `join_from` (text)
@@ -569,9 +570,12 @@ Anything not listed here is still reachable with `sw api`, which resolves any op
 - backend: rest · relay-rest
 - A single project-wide record rather than a collection.
 - fields:
-  - `domain` (text)
-  - `username` (text)
-  - `default_caller_id` (text)
+  - `domain_identifier` (text) — The per-space SIP identifier; `domain` is built from it.
+  - `default_encryption` (choice=['default', 'required', 'optional'])
+  - `default_codecs` (multi=['OPUS', 'OPUS@48000H@20I', 'OPUS@24000H@20I', 'OPUS@16000H@20I', 'OPUS@8000H@20I', 'G722', 'PCMU', 'PCMA', 'G729', 'VP8', 'H264'])
+  - `default_ciphers` (multi=['AEAD_AES_256_GCM_8', 'AES_256_CM_HMAC_SHA1_80', 'AES_CM_128_HMAC_SHA1_80', 'AES_256_CM_HMAC_SHA1_32', 'AES_CM_128_HMAC_SHA1_32'])
+  - `default_send_as` (text)
+  - `default_outbound_policy` (text)
 
 ### `tokens` — API tokens
 
