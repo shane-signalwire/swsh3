@@ -351,7 +351,7 @@ class TestNavigation:
     async def test_jump_modal_lists_every_resource(self):
         app = SwshApp(profile=FAKE)
         async with app.run_test() as pilot:
-            await pilot.press("question_mark")
+            await pilot.press("ctrl+r")
             await pilot.pause()
             # A dropdown of every resource, clickable, not a typed prompt.
             ids = {b.id for b in app.screen.query(".drop-item")}
@@ -781,7 +781,7 @@ class TestClickableDialogs:
     async def test_jump_list_is_clickable_not_typed(self):
         app = SwshApp(profile=FAKE)
         async with app.run_test() as pilot:
-            await pilot.press("question_mark")
+            await pilot.press("ctrl+r")
             await pilot.pause(0.3)
             # no text input to type into; navigation is by clicking a button
             assert not app.screen.query("#jump-input")
@@ -1567,7 +1567,7 @@ class TestDrillOnlyResourcesAreNotMenuEntries:
             assert "drop-campaigns" not in {b.id for b in app.screen.query(".drop-item")}
             await pilot.press("escape")
             await pilot.pause()
-            await pilot.press("question_mark")
+            await pilot.press("ctrl+r")
             await pilot.pause(0.3)
             listed = {b.id for b in app.screen.query(".drop-item")}
             for key in ("campaigns", "subcreds", "chunks", "vstreams"):
@@ -1748,3 +1748,126 @@ class TestTheCockpitOpensOnADashboard:
             app.load_metrics = lambda: runs.append(1)
             app.action_refresh()
             assert runs == [1]
+
+
+class TestTheKeysAreDiscoverable:
+    """`check_action` *hides* a binding that does not apply rather than greying
+    it, so most of the app's keys are invisible most of the time, and `j`/`k`
+    are `show=False` and were advertised nowhere at all. The only hint the app
+    printed went to the event feed, which is hidden on the view it opens on."""
+
+    async def test_question_mark_shows_the_keys(self):
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.press("question_mark")
+            await pilot.pause(0.3)
+            body = str(app.screen.query_one("#help-body").content)
+            assert "getting around" in body
+            assert "j / k" in body, "the one pair shown nowhere else"
+            assert "hand the mouse back" in body
+
+    async def test_it_closes_on_escape(self):
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.press("question_mark")
+            await pilot.pause(0.3)
+            await pilot.press("escape")
+            await pilot.pause(0.3)
+            assert not app.screen.query("#help-body")
+
+    def test_every_section_key_is_a_real_binding_or_a_documented_range(self):
+        """A help screen that lists a key the app does not have is worse than
+        no help screen."""
+        from swsh.tui.app import HelpScreen
+
+        real = {b.key for b in SwshApp.BINDINGS}
+        spelled = {"j / k": ("j", "k"), "n / e / d": ("n", "e", "d"),
+                   "t / p / s / R": ("t", "p", "s", "R"),
+                   "u / a": ("u", "a"), "0-9 * #": (), ":": ("colon",),
+                   "/": ("slash",), "?": ("question_mark",), ".": ("full_stop",)}
+        for _, keys in HelpScreen.SECTIONS:
+            for key, _what in keys:
+                for actual in spelled.get(key, (key,)):
+                    assert actual in real, (key, actual)
+
+
+class TestRowsCanBeNarrowedOnScreen:
+    """The cockpit had no equivalent of the CLI's `--match`: the only text
+    input on the view selected a *resource*, not rows."""
+
+    async def test_slash_filters_the_rows_already_held(self):
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(120, 40)):
+            app.resource = res.get("queues")
+            app.rows = [{"id": "q-1", "friendly_name": "support"},
+                        {"id": "q-2", "friendly_name": "sales"},
+                        {"id": "q-3", "friendly_name": "support overflow"}]
+            app.view = "rows"
+            app.row_filter = "support"
+            assert len(app.visible_rows()) == 2
+
+    async def test_an_empty_filter_shows_everything(self):
+        """Different from no filter, and both must show every row."""
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(120, 40)):
+            app.resource = res.get("queues")
+            app.rows = [{"id": "q-1", "friendly_name": "support"}]
+            for value in (None, ""):
+                app.row_filter = value
+                assert len(app.visible_rows()) == 1
+
+    async def test_the_title_says_both_numbers(self):
+        """A filtered count alone reads as the collection having shrunk."""
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.resource = res.get("queues")
+            app.rows = [{"id": f"q-{i}", "friendly_name": f"q{i}"} for i in range(9)]
+            app.view = "rows"
+            app.row_filter = "q1"
+            app._refresh_view()
+            await pilot.pause()
+            title = str(app.query_one("#pane-title").content)
+            assert "1 of 9" in title and "/q1" in title
+
+    async def test_it_does_not_survive_a_move_to_another_resource(self):
+        """`/` narrows a listing; it is not a mode."""
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.row_filter = "support"
+            app.switch_to("sip")
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if app.row_filter is None:
+                    break
+            assert app.row_filter is None
+
+
+class TestTheCockpitOpensWithoutCredentials:
+    """`sw sh` used to fail two lines before the app was built, and the app
+    contains the very form that fixes it — reachable with ctrl+p, but only once
+    you already have working credentials. The one screen able to solve the
+    problem was behind the problem."""
+
+    async def test_it_opens_on_the_profile_form(self):
+        blank = Profile(name="", project="", token="", space="")
+        app = SwshApp(profile=blank, onboarding=True)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            assert app.screen.query("#pf-project"), "the form that collects them"
+
+    async def test_dismissing_it_says_what_is_needed(self):
+        blank = Profile(name="", project="", token="", space="")
+        app = SwshApp(profile=blank, onboarding=True)
+        notes: list[str] = []
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            app.notify = lambda message, **kw: notes.append(str(message))
+            await pilot.press("escape")
+            await pilot.pause(0.3)
+            assert any("API token" in n for n in notes), notes
+
+    async def test_a_normal_start_does_not_open_it(self):
+        app = SwshApp(profile=FAKE)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            assert not app.screen.query("#pf-project")

@@ -43,6 +43,14 @@ LIST, CREATE, READ, UPDATE, DELETE = "L", "C", "R", "U", "D"
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
 
+# Columns that name a row to a person. A resource that declares one of these
+# can be addressed by it, with no per-resource declaration.
+_NAME_LIKE = frozenset({
+    "name", "display_name", "friendly_name", "title", "label",
+    "number", "short_code", "username", "domain", "uri", "topic", "email",
+})
+
+
 def route_placeholders(operation_id: str, api: str = "") -> tuple[str, ...]:
     """The ids an operation's route needs, from the catalog.
 
@@ -278,11 +286,31 @@ class Resource:
     def search_fields(self) -> tuple[str, ...]:
         """What ``list --match`` looks in: the lookup handles, else the columns.
 
-        ``lookup`` is deliberately narrower than this — resolving an identifier
-        must not succeed on a ``created_at`` that happens to contain the text,
-        while filtering a listing on one is perfectly reasonable.
+        ``lookup_fields`` is deliberately narrower than this — resolving an
+        identifier must not succeed on a ``created_at`` that happens to contain
+        the text, while filtering a listing on one is perfectly reasonable.
         """
-        return self.lookup or self.columns
+        return self.lookup_fields or self.columns
+
+    @property
+    def lookup_fields(self) -> tuple[str, ...]:
+        """Row fields a person may type instead of an id.
+
+        ``lookup`` is the explicit declaration and wins where it exists. Where
+        it does not, the name-like columns the resource already declares serve
+        instead — because "what is this row called" is not a question that needs
+        declaring per resource, and requiring it meant `numbers` was the only
+        resource in the registry you could address by name. Everywhere else
+        `get`, `update` and `delete` took a uuid and nothing else, and finding
+        one meant a `list -m` and a copy-paste.
+
+        Only names, never a date or a status: resolving an identifier has to
+        fail rather than match the wrong row, and `created_at` contains "2026"
+        for almost everything.
+        """
+        if self.lookup:
+            return self.lookup
+        return tuple(c for c in self.columns if c.rsplit(".", 1)[-1] in _NAME_LIKE)
 
     def verb(self, op: str) -> str:
         """The CLI command name for a CRUD op-name."""

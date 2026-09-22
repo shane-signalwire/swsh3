@@ -153,6 +153,7 @@ class Ctx:
     raw: bool = False
     raw_emitted: bool = False
     timeout: float | None = None
+    csv: bool = False
 
 
 def _profile() -> Profile:
@@ -489,6 +490,7 @@ def main_callback(
     Ctx.raw = False
     Ctx.raw_emitted = False
     Ctx.timeout = None
+    Ctx.csv = False
     # `--version` is an option, not a command, so the callback must run without a
     # subcommand; when there is genuinely nothing to do, fall back to help.
     if ctx.invoked_subcommand is None:
@@ -524,9 +526,21 @@ def shell(
     """Launch the live cockpit: browse, edit and watch every resource."""
     from .tui.app import SwshApp
 
-    profile = _profile()
+    # With no credentials this used to fail here, two lines before the cockpit
+    # was built — and the cockpit contains a perfectly good profile form, which
+    # `ctrl+p` reaches, but only once you already have working credentials. So
+    # the one screen able to fix the problem was behind the problem. It opens on
+    # that form instead; `_profile()` is still what fails for every other
+    # command, where there is nowhere better to go.
+    try:
+        profile = _profile()
+        onboarding = False
+    except typer.Exit:
+        profile = Profile(name="", project="", token="", space="")
+        onboarding = True
+
     SwshApp(profile=profile, topics=list(topics), poll_interval=poll_interval,
-            record_path=record).run()
+            record_path=record, onboarding=onboarding).run()
 
 
 # ------------------------------------------------------------------ completion
@@ -903,6 +917,21 @@ def completion_show(
 # ------------------------------------------------------------------------ auth
 
 
+async def _check_credentials(project: str, token: str, space: str) -> str | None:
+    """None when the three values work, else one line saying what went wrong."""
+    profile = Profile(name="probe", project=project, token=token, space=space)
+    try:
+        async with SwshClient(profile) as client:
+            await client.whoami()
+    except SwshError as exc:
+        return str(exc)
+    except httpx.HTTPError as exc:
+        return _describe_network_error(exc)
+    except Exception as exc:  # a mistyped space can fail in many shapes
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
 @app.command()
 def login(
     name: str = typer.Option("default", "--name", "-n", help="Profile name."),
@@ -913,9 +942,23 @@ def login(
     """Store credentials durably in ~/ (0600 config file), so a profile survives
     reboots and new terminals. Set SWSH_USE_KEYRING=1 to also mirror the token
     into the OS keyring."""
+    if not (project and token and space):
+        # Where the three values come from. The tool never said, and a token is
+        # not something anyone has lying around.
+        ui.console.print("[muted]API credentials live at[/muted] "
+                         "[brand]https://<your-space>.signalwire.com/credentials[/brand]")
     project = project or typer.prompt("Project ID")
     token = token or typer.prompt("API token", hide_input=True)
     space = space or typer.prompt("Space (e.g. acme.signalwire.com)")
+
+    # Check before storing. `save_profile` wrote whatever it was given and the
+    # first sign of a typo was whatever command someone ran next failing in a
+    # way that looked like the tool's fault.
+    checked = asyncio.run(_check_credentials(project, token, space))
+    if checked is not None:
+        ui.fail(checked)
+        ui.hint("Nothing was saved. Check the three values and try again.")
+        raise typer.Exit(1)
 
     saved = save_profile(name, project, token, space)
     ui.console.print(f"[ok]saved[/ok] profile [brand]{name}[/brand] for {saved.host}")
@@ -2089,7 +2132,59 @@ def _show_rows(rows: list[dict[str, Any]], columns: list[str], title: str) -> No
     if Ctx.as_json:
         ui.emit(rows, as_json=True)
         return
+    if Ctx.csv:
+        ui.emit_csv(rows, columns)
+        return
     ui.console.print(ui.rows_table(rows, columns, title=title))
+
+
+def _sorted_rows(rows: list[dict[str, Any]], field: str | None,
+                 descending: bool) -> list[dict[str, Any]]:
+    """Rows in the order someone asked for, nulls last either way.
+
+    A null sorting as "smallest" puts every unnamed row at the top of an
+    ascending sort and every named one at the top of a descending one, which
+    makes `--desc` look like it did something other than reverse. Missing
+    values are simply last.
+    """
+    if not field:
+        return rows
+
+    def key(row: dict[str, Any]) -> str:
+        value = resources.cell(row, field)
+        # One comparable type: rows mix strings, numbers and nulls in the same
+        # column, and sorting them against each other is a TypeError.
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return f"{float(value):020.4f}"
+        return str(value).lower()
+
+    # Partitioned rather than sorted on a (is_null, value) key, because
+    # `reverse=True` would flip that flag too and float every unnamed row to
+    # the top — which is what `--desc` did on `sw numbers list --sort name`.
+    filled = [r for r in rows if resources.cell(r, field) not in (None, "")]
+    empty = [r for r in rows if resources.cell(r, field) in (None, "")]
+    return sorted(filled, key=key, reverse=descending) + empty
+
+
+def _chosen_columns(spec_text: str | None, resource: resources.Resource,
+                    rows: list[dict[str, Any]]) -> list[str]:
+    """``--columns`` if given, else whatever the registry would have shown.
+
+    Unknown names are not silently dropped: asking for a column and getting a
+    table without it, with no complaint, is how someone concludes the data is
+    missing rather than the name is.
+    """
+    if not spec_text:
+        return resources.columns_for(resource, rows)
+    wanted = [c.strip() for c in spec_text.split(",") if c.strip()]
+    if rows:
+        unknown = [c for c in wanted if not any(resources.has_key(r, c) for r in rows)]
+        if unknown:
+            ui.fail(f"no such column: {', '.join(unknown)}")
+            present = sorted({k for row in rows for k in row})
+            ui.hint(f"this row has: {', '.join(present[:18])}")
+            raise typer.Exit(2)
+    return wanted
 
 
 # A walk has to stop somewhere. At the platform's 50-row default page this is
@@ -2181,15 +2276,16 @@ async def _resolve_id(client: SwshClient, resource: resources.Resource,
     """Turn what someone typed into the id the read route needs.
 
     An id-shaped identifier is passed straight through. Anything else is a
-    handle — a phone number, a name — resolved against ``resource.lookup``. An
+    handle — a phone number, a name — resolved against ``resource.lookup_fields``. An
     exact hit wins outright; several substring hits are reported as the
     ambiguity they are rather than silently resolved to the first row.
     """
-    if not resource.lookup or resources.looks_like_id(identifier):
+    if not resource.lookup_fields or resources.looks_like_id(identifier):
         return identifier
 
-    rows = await _search_rows(client, resource, identifier, resource.lookup)
-    exact = [r for r in rows if resources.row_matches_exactly(r, identifier, resource.lookup)]
+    rows = await _search_rows(client, resource, identifier, resource.lookup_fields)
+    exact = [r for r in rows
+             if resources.row_matches_exactly(r, identifier, resource.lookup_fields)]
     candidates = exact or rows
 
     if not candidates:
@@ -2211,15 +2307,15 @@ def _id_metavar(resource: resources.Resource) -> str:
     nothing else" and is the reason someone pastes a uuid they had to go and
     look up.
     """
-    if not resource.lookup:
+    if not resource.lookup_fields:
         return "ID"
-    return "ID|" + "|".join(f.upper() for f in resource.lookup)
+    return "ID|" + "|".join(f.rsplit(".", 1)[-1].upper() for f in resource.lookup_fields)
 
 
 def _by_what(resource: resources.Resource) -> str:
-    if not resource.lookup:
+    if not resource.lookup_fields:
         return "by id"
-    return "by id, " + " or ".join(resource.lookup)
+    return "by id, " + " or ".join(f.rsplit(".", 1)[-1] for f in resource.lookup_fields)
 
 
 def _said(typed: str, resource_id: str) -> str:
@@ -2250,14 +2346,21 @@ def _add_list(sub: typer.Typer, resource: resources.Resource) -> None:
                             "and --raw shows one response.")
             _emit_raw(await client.invoke(resource, "list"))
             return
+        Ctx.csv = bool(kw.get("csv"))
         if query:
             # No limit on the walk: a search that stops early is a search that
             # can answer "no rows" about a record on the next page.
             rows = await _search_rows(client, resource, query, resource.search_fields)
         else:
-            rows = await _list_rows(client, resource, limit=kw["limit"])
+            # Sorting reorders what was fetched, so the page has to be filled
+            # before the limit is applied or `--sort` would order an arbitrary
+            # slice and call it the top of the list.
+            rows = await _list_rows(client, resource,
+                                    limit=None if kw.get("sort") else kw["limit"])
+        rows = _sorted_rows(rows, kw.get("sort"), bool(kw.get("desc")))
         rows = rows[:kw["limit"]]
-        _show_rows(rows, resources.columns_for(resource, rows), resource.title)
+        _show_rows(rows, _chosen_columns(kw.get("columns"), resource, rows),
+                   resource.title)
 
     searched = ", ".join(resource.search_fields) or "every column"
     _command(sub, resource.verb("list"), run,
@@ -2265,8 +2368,21 @@ def _add_list(sub: typer.Typer, resource: resources.Resource) -> None:
               _param("match", str | None,
                      typer.Option(None, "--match", "-m",
                                   help="Show only rows matching this text. "
-                                       f"Searches {searched}."))],
+                                       f"Searches {searched}.")),
+              _param("sort", str | None,
+                     typer.Option(None, "--sort", help="Order by this field.")),
+              _param("desc", bool,
+                     typer.Option(False, "--desc", help="Reverse the sort.")),
+              _param("columns", str | None,
+                     typer.Option(None, "--columns",
+                                  help="Comma-separated fields to show instead "
+                                       "of the default ones.")),
+              _param("csv", bool,
+                     typer.Option(False, "--csv", help="Comma-separated output."))],
              f"List {resource.title}.\n\n"
+             "--sort orders the whole collection, not the page --limit would "
+             "have stopped at. --columns takes any field a row carries, "
+             "including the ones the default table leaves out.\n\n"
              "--raw prints the response envelope as it arrived, paging links and "
              "all: --limit does not apply to it, and --match is refused.")
 

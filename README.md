@@ -96,6 +96,11 @@ sw profile use scratch              # make one the default
 sw whoami                           # verify, and say where each value came from
 ```
 
+`sw login` checks the three values against the platform before it writes
+anything, so a typo is caught there rather than by whatever command you ran
+next. If you have no credentials at all, `sw sh` opens straight onto the form
+that collects them.
+
 `sw whoami` reports the **tier** each value came from, which is the answer to
 every "my profile is being ignored" moment.
 
@@ -186,17 +191,18 @@ Matching is case-insensitive and digit-insensitive, so `2095550183`,
 outright; several partial hits are an error that names the candidates rather
 than guessing.
 
-**`numbers` is the only resource that does this today.** Handle lookup is opt-in
-per resource, and it is only turned on where the search has been probed against
-a live space — a filter the API quietly ignores returns the whole collection,
-and the "match" then resolves to the wrong row, which is worse than a 404.
-Everywhere else `get`, `update` and `delete` want the id, and `--match/-m` on the
-listing is how you find it:
+**Most of the registry works this way** — anything whose rows carry a name,
+display name, number or username, which is 36 of the 54 resources:
 
 ```bash
-sw sip list -m support            # find it
-sw sip get <the id from that row> # then act on it
+sw sip get fsdemo
+sw swml delete "after hours"
+sw queues update support --set max_size=20
 ```
+
+The 18 that do not are logs, minted tokens and drills: rows with no name to
+type. Several rows sharing a name is an error listing the candidates, never a
+guess.
 
 Anything shaped like an id (a uuid, or a compatibility SID) is used directly and
 costs no lookup. Every command prints what it resolved, so the id is there to
@@ -238,6 +244,18 @@ sw numbers get "Fax Number" --raw | jq '.'
 `--raw` implies `--json`. A command with no single response — `sw listen`, for
 instance — refuses `--raw` *before* it runs anything, rather than doing the work
 with the output suppressed and then admitting it cannot answer.
+
+Every list also takes `--sort <field>`, `--desc`, `--columns a,b,c` and `--csv`:
+
+```bash
+sw numbers list --sort created_at --desc
+sw sip list --columns id,display_name,sip_endpoint.username --csv > endpoints.csv
+```
+
+`--sort` orders the whole collection, not the page `--limit` would have stopped
+at. `--columns` reaches any field a row carries, including the ones the default
+seven-column table leaves out, and an unknown name is an error rather than a
+quietly missing column.
 
 `--timeout` is how long to wait on the platform, 30 seconds by default, and
 `SWSH_TIMEOUT` sets it for a whole shell. A 429 or a 5xx on a request that is
@@ -383,7 +401,9 @@ is the only place the command tree advertises itself.
 
 | key | does |
 | --- | --- |
-| `?` | jump list: every resource, by name |
+| `?` | the keys — all of them, grouped |
+| `/` | filter the rows on screen, like the CLI's `--match` |
+| `ctrl+r` | jump list: every resource, by name |
 | `:` | command bar — `:numbers`, `:calls`, `:sip` |
 | `escape` | back one level: a drill to its list, a list to the dashboard |
 | menu bar | the resource groups, as dropdowns |
@@ -580,8 +600,6 @@ dependency on the spec repo. To regenerate it you must compile the OpenAPI first
   validates that route as a full replace, so a partial `--set encryption=…` is
   refused with `missing_sip_configuration`. Resend `name`, `uri`, `encryption`,
   `ciphers` and `codecs` together.
-- **Handle lookup is `numbers` only** — see
-  [Finding a row without knowing its id](#finding-a-row-without-knowing-its-id).
 - **Repeated failed SIP registrations get your source IP blocked** by the
   platform, which looks exactly like a broken client. Nothing in `sw` retries
   automatically, but do not loop registration attempts by hand;

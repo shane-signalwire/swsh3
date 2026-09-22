@@ -137,6 +137,28 @@ PromptScreen, ConfirmScreen, JumpScreen {
     background: #0a0c12 70%;
 }
 
+/* The help overlay. Capped in height and scrollable rather than sized to its
+   content: the list is thirty-odd keys and a modal taller than the terminal
+   cannot be closed, because the escape hint is the part off the bottom. */
+#help-box {
+    width: 64;
+    max-height: 90%;
+    padding: 1 2;
+    background: #11141d;
+    border: solid #044EF4;
+}
+
+#help-title {
+    color: #40E0D0;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#help-scroll {
+    height: auto;
+    max-height: 100%;
+}
+
 #prompt-box {
     width: 62;
     height: auto;

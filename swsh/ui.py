@@ -117,6 +117,25 @@ def emit(data: Any, *, as_json: bool, renderer=None) -> None:
         console.print(data)
 
 
+def emit_csv(rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
+    """Rows as CSV on stdout, for a spreadsheet or `cut`.
+
+    Written with `csv.writer` rather than by joining on commas, because a
+    display name containing a comma or a quote is ordinary and hand-rolled CSV
+    gets it wrong in a way nothing downstream can detect. Cells go through the
+    same `_cell` the table uses, so a timestamp reads the same in both.
+    """
+    import csv
+    import sys
+
+    if console.quiet:
+        return
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([_cell(res.cell(row, column)) for column in columns])
+
+
 def json_view(data: Any) -> RenderableType:
     """A payload as JSON, highlighted, wrapped and never truncated.
 

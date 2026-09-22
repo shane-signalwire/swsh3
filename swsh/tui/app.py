@@ -95,6 +95,86 @@ class PromptScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class HelpScreen(ModalScreen[None]):
+    """Every key, grouped, because the footer only shows what currently applies.
+
+    `check_action` *hides* a binding that does not apply rather than greying it,
+    which keeps the footer honest and means most of the app's keys are invisible
+    most of the time. `j` and `k` are `show=False` and were advertised nowhere
+    at all. The one hint the app printed went to the event feed, which is hidden
+    on the view it opens on.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "close"),
+        Binding("question_mark", "close", "close"),
+        Binding("q", "close", "close"),
+    ]
+
+    # Grouped the way someone looks for them: where am I, what is this row,
+    # what is on the call. Kept here rather than derived from BINDINGS so the
+    # order is the useful one rather than registration order, and so a key can
+    # carry a fuller description than a footer cell has room for.
+    SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+        ("getting around", (
+            (":", "command bar — type a resource name"),
+            ("ctrl+r", "jump list of every resource"),
+            ("/", "filter the rows on screen"),
+            ("escape", "back one level"),
+            ("j / k", "down / up, for vi hands"),
+            ("r", "refresh"),
+            ("ctrl+p", "profiles — switch space"),
+            ("q", "quit"),
+        )),
+        ("this row", (
+            ("enter", "inspect — drill into it"),
+            ("n / e / d", "new / edit / delete"),
+            ("x", "more actions for this resource"),
+            (".", "actions for the row under the cursor"),
+            ("v", "cycle the detail pane: fields, json, raw"),
+            ("F", "routing — follow where a number points"),
+        )),
+        ("calls", (
+            ("h", "hang up the selected leg"),
+            ("t / p / s / R", "transfer / say / DTMF / record"),
+            ("f", "show ended calls"),
+            ("c", "clear the feed"),
+        )),
+        ("the phone", (
+            ("H", "dial or hang up"),
+            ("g", "register the device"),
+            ("u / a", "stand up the agent / call it"),
+            ("0-9 * #", "DTMF on a call; types the target off one"),
+            ("y", "copy diagnostics"),
+        )),
+        ("the terminal", (
+            ("m", "hand the mouse back, so text can be selected"),
+        )),
+    )
+
+    def __init__(self, app_ref: SwshApp | None = None) -> None:
+        super().__init__()
+        self._app_ref = app_ref
+
+    def compose(self) -> ComposeResult:
+        body = Text()
+        for index, (title, keys) in enumerate(self.SECTIONS):
+            if index:
+                body.append("\n")
+            body.append(f"{title}\n", style="bold #40E0D0")
+            for key, what in keys:
+                body.append(f"  {key:<14}", style="#FFD700")
+                body.append(f"{what}\n", style="grey70")
+        body.append("\nescape or ? to close", style="grey42")
+        with Vertical(id="help-box"):
+            yield Label("keys", id="help-title")
+            with VerticalScroll(id="help-scroll"):
+                yield Static(body, id="help-body")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmScreen(ModalScreen[bool]):
     """Yes/no gate in front of anything destructive."""
 
@@ -431,7 +511,9 @@ class SwshApp(App[None]):
     BINDINGS = [
         Binding("q", "quit", "quit"),
         Binding("colon", "command", "command"),
-        Binding("question_mark", "jump", "resources"),
+        Binding("question_mark", "help", "keys"),
+        Binding("slash", "filter", "filter"),
+        Binding("ctrl+r", "jump", "resources"),
         Binding("escape", "back", "back"),
         Binding("r", "refresh", "refresh"),
         Binding("enter", "inspect", "inspect"),
@@ -470,9 +552,13 @@ class SwshApp(App[None]):
     selecting: reactive[bool] = reactive(False)
 
     def __init__(self, profile: Profile, topics: list[str] | None = None,
-                 poll_interval: float = 2.0, record_path: str | None = None):
+                 poll_interval: float = 2.0, record_path: str | None = None,
+                 onboarding: bool = False):
         super().__init__()
         self.profile = profile
+        # There are no credentials yet, so open on the form that collects them
+        # rather than on a dashboard of eight tiles that can only show dashes.
+        self.onboarding = onboarding
         self.topics = topics or []
         self.poll_interval = poll_interval
         self.record_path = Path(record_path) if record_path else None
@@ -485,6 +571,10 @@ class SwshApp(App[None]):
         # True when the walk stopped at PAGE_CAP with pages still to come, so
         # the title can say `400+` rather than pass a ceiling off as a total.
         self.rows_capped: bool = False
+        # `/` text, applied to the rows already held. None means no filter at
+        # all, which is different from "" — an empty filter someone is still
+        # typing should show everything, not nothing.
+        self.row_filter: str | None = None
         self.columns: list[str] = []
         self.loading = False
         self.load_error: str | None = None
@@ -743,9 +833,34 @@ class SwshApp(App[None]):
         self._start_pipeline()
         self.set_interval(1.0, self._tick)
         self._refresh_view()
+        if self.onboarding:
+            # Nothing to count and nothing to poll until there are credentials.
+            self.call_after_refresh(self._first_run)
+            return
         self.load_metrics()
-        self._log_line(Text("sw started. ':' to switch resource, '?' to list.",
+        self._log_line(Text("sw started. ':' to switch resource, '?' for the keys.",
                             style="grey58"))
+
+    def _first_run(self) -> None:
+        """No credentials yet: open the form that collects them.
+
+        Saving here *does* make the profile current, unlike the same form
+        reached from `ctrl+p` where saving and using are deliberately separate.
+        There is nothing to keep using, so asking someone to press Use on the
+        only profile they have would be ceremony.
+        """
+        def saved(values: dict[str, str] | None) -> None:
+            if not values:
+                self.notify("sw needs a project id, an API token and a space. "
+                            "Press ctrl+p to add them.", severity="warning", timeout=10)
+                return
+            name = values.get("name") or "default"
+            config.save_profile(name, values["project"], values["token"],
+                                values["space"], make_default=True)
+            self.onboarding = False
+            self.switch_profile(name)
+
+        self.push_screen(ProfileFormScreen(None), saved)
 
     def _widget(self, selector: str, kind: type):
         """Find a widget on the *base* screen, tolerating a modal on top.
@@ -1056,6 +1171,20 @@ class SwshApp(App[None]):
 
     # --------------------------------------------------- the generic browser view
 
+    def visible_rows(self) -> list[dict[str, Any]]:
+        """The rows the table shows: everything held, less the `/` filter.
+
+        Filtering happens over what is already in memory rather than by asking
+        the platform again — the walk in `_all_rows` has been and got the
+        collection, and a keystroke should not cost a round trip. It reuses the
+        resource's own `search_fields`, so `/` looks in exactly what the CLI's
+        `--match` looks in.
+        """
+        if not self.row_filter or self.resource is None:
+            return self.rows
+        fields = self.resource.search_fields
+        return [r for r in self.rows if res.row_matches(r, self.row_filter, fields)]
+
     def _render_rows(self) -> None:
         table = self._widget("#rows", DataTable)
         if table is None:
@@ -1067,10 +1196,11 @@ class SwshApp(App[None]):
         if resource is None:
             return
 
-        self.columns = res.columns_for(resource, self.rows)
+        visible = self.visible_rows()
+        self.columns = res.columns_for(resource, visible)
         table.add_columns(*self.columns)
 
-        for index, row in enumerate(self.rows):
+        for index, row in enumerate(visible):
             identifier = str(row.get(resource.id_field) or row.get("sid") or index)
             table.add_row(*[_cell(res.cell(row, c)) for c in self.columns], key=identifier)
         self._restore_cursor(table, selected)
@@ -1093,6 +1223,11 @@ class SwshApp(App[None]):
             # `134` is a count; `134+` is "at least this many". The pane used to
             # print the first page's length as though it were the total.
             suffix = f"{len(self.rows)}{'+' if self.rows_capped else ''}"
+            if self.row_filter:
+                # Say both numbers. A filtered count alone reads as the whole
+                # collection having shrunk.
+                suffix = (f"{len(self.visible_rows())} of {suffix}"
+                          f"  ·  /{self.row_filter}")
         # Advertise what this namespace actually permits, so the key hints in
         # the footer are not promises the API will refuse.
         ops = "".join(c for c in "CRUD" if resource.can(c)) or "read-only"
@@ -1128,6 +1263,9 @@ class SwshApp(App[None]):
         """Fetch a namespace off the event loop and repaint."""
         self.rows = []
         self.rows_capped = False
+        # A filter typed on one resource must not silently hide rows of the
+        # next: `/` narrows a listing, it is not a mode.
+        self.row_filter = None
         self.load_error = None
         self._drill_parent = None
         if not resource.can_list and not resource.is_singleton:
@@ -1995,8 +2133,33 @@ class SwshApp(App[None]):
         command.value = ""
         command.focus()
 
+    def action_filter(self) -> None:
+        """`/` narrows the rows on screen, the way `--match` narrows a listing.
+
+        Over what is already held, not a new request: `_all_rows` has been and
+        fetched the collection, and a keystroke should not cost a round trip.
+        Submitting nothing clears it, which is the only way out that does not
+        require remembering a second key.
+        """
+        if self.resource is None or self.view != "rows":
+            self.notify("nothing to filter here", severity="warning")
+            return
+        searched = ", ".join(self.resource.search_fields[:4]) or "every column"
+
+        def apply(value: str | None) -> None:
+            self.row_filter = (value or "").strip() or None
+            self._refresh_view()
+
+        self.push_screen(PromptScreen(f"filter on {searched}",
+                                      placeholder=self.row_filter or ""), apply)
+
+    def action_help(self) -> None:
+        """`?` shows the keys. It used to open the resource list, which is the
+        one thing in the app that was already reachable another way (`:`)."""
+        self.push_screen(HelpScreen(self))
+
     def action_jump(self) -> None:
-        """`?` drops down every resource that has a screen, anchored at the left."""
+        """Drops down every resource that has a screen, anchored at the left."""
         self.push_screen(
             DropdownMenu([r for r in res.RESOURCES if r.standalone],
                          anchor_x=0, title="resources"),

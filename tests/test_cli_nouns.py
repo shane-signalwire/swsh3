@@ -175,7 +175,10 @@ class TestGeneratedVerbs:
         assert result.exit_code == 0, result.output
         assert "field" in result.output and "value" in result.output
         assert "q-1" in result.output
-        assert captured[0] == {"key": "queues", "op": "read", "id": "q-1", "body": None}
+        # The read is the last call, not the first: `q-1` is not id-shaped, so
+        # it is tried as a handle against `friendly_name` before falling
+        # through to the read route. A uuid costs no lookup at all.
+        assert captured[-1] == {"key": "queues", "op": "read", "id": "q-1", "body": None}
 
     def test_get_json_is_still_the_raw_row(self, captured):
         result = runner.invoke(cli.app, ["queues", "get", "q-1", "--json"])
@@ -513,8 +516,8 @@ class TestGeneratedExtras:
         result = runner.invoke(cli.app, ["groups", "memberships", "g-1", "--json"])
         assert result.exit_code == 0, result.output
         assert json.loads(result.output) == [{"id": "m-1", "phone_number_id": "pn-1"}]
-        assert captured[0] == {"key": "groups", "op": "list_memberships", "id": "g-1",
-                               "body": None}
+        assert captured[-1] == {"key": "groups", "op": "list_memberships", "id": "g-1",
+                                "body": None}
 
     def test_an_action_on_a_drill_row_takes_that_row_id(self, captured):
         result = runner.invoke(cli.app, ["groups", "remove-member", "m-1", "-y"])
@@ -536,3 +539,51 @@ def test_docs_list_is_the_command_table():
     rows = json.loads(result.output)
     assert {"command", "resource", "group", "ops", "api"} <= set(rows[0])
     assert any(r["command"] == "sw numbers" for r in rows)
+
+
+class TestAnyRowCanBeFoundByName:
+    """`lookup` was declared on `numbers` and nowhere else, so every other
+    resource took a uuid and nothing but — and finding one meant a `list -m`
+    and a copy-paste. The name-like columns a resource already declares answer
+    "what is this row called" without a second declaration per resource."""
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        calls: list[dict] = []
+
+        async def fake_invoke(self, resource, op, *, resource_id=None, body=None, **params):
+            calls.append({"key": resource.key, "op": op, "id": resource_id, "body": body})
+            if op == "list":
+                return {"data": [{"id": "q-9", "friendly_name": "support"}]}
+            return {"id": resource_id}
+
+        monkeypatch.setattr(cli.SwshClient, "invoke", fake_invoke)
+        return calls
+
+    def test_most_of_the_registry_is_addressable_by_name(self):
+        named = [r.key for r in resources.RESOURCES if r.lookup_fields]
+        assert len(named) > 30, named
+
+    def test_an_explicit_lookup_still_wins(self):
+        assert resources.get("numbers").lookup_fields == ("number", "name")
+
+    def test_logs_and_tokens_have_no_handle_because_they_have_no_name(self):
+        for key in ("logs", "messages", "recordings", "chattoken", "vstreams"):
+            assert not resources.get(key).lookup_fields, key
+
+    def test_a_date_is_never_a_handle(self):
+        """Resolving an identifier has to fail rather than match the wrong row,
+        and `created_at` contains "2026" for almost everything."""
+        for r in resources.RESOURCES:
+            assert not any(f.endswith("_at") or f == "status"
+                           for f in r.lookup_fields), r.key
+
+    def test_the_help_says_what_it_will_accept(self):
+        out = runner.invoke(cli.app, ["sip", "get", "--help"]).output
+        assert "display_name" in out or "username" in out
+
+    def test_a_uuid_costs_no_lookup(self, captured):
+        """The short-circuit that keeps the common case one request."""
+        result = runner.invoke(cli.app, ["queues", "get", PN1, "--json"])
+        assert result.exit_code == 0, result.output
+        assert [c["op"] for c in captured] == ["read"]
