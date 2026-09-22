@@ -28,6 +28,11 @@ dependencies = [
     # RELAY tap, `calling.*` call control, and the Agents SDK the lab stands
     # up (`from signalwire import AgentBase`). One package, three uses.
     "signalwire-sdk>=3.0.2,<3.1",
+    # The cockpit's SIP phone: the baresip stack with an asyncio API, wheels
+    # bundling libre and libbaresip so there is nothing to build. Still a
+    # pre-release, which needs no `--pre` here: naming one in the specifier is
+    # what makes pip willing to resolve it.
+    "baresip-python>=0.5.1a1",
     "typer>=0.15",
     "rich>=13.9",
     "textual>=1.0",
@@ -41,12 +46,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The lab's SIP device. Optional because it is a binary wheel and a pre-release
-# one, and because every other part of sw works without a SIP stack:
-#     pip install --pre 'swsh[sip]'
-sip = [
-    "baresip-python>=0.5.1a1",
-]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -56,8 +55,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/signalwire/swsh3"
-Issues = "https://github.com/signalwire/swsh3/issues"
+Homepage = "https://github.com/shane-signalwire/swsh3"
+Issues = "https://github.com/shane-signalwire/swsh3/issues"
 
 [project.scripts]
 # One console script. The interactive shell the old `swsh` binary stood for is

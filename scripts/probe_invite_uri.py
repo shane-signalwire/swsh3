@@ -193,7 +193,7 @@ def report(name: str, message: str) -> None:
 
 def main() -> int:
     if not available():
-        print("the SIP stack is not installed; nothing to probe")
+        print("the SIP stack did not load; nothing to probe")
         return 0
     print(f"far end: 127.0.0.1:{LISTEN_PORT} (a raw socket, never answers)\n")
     for offset, (name, case) in enumerate(CASES.items()):

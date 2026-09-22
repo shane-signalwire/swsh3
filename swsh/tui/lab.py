@@ -92,7 +92,7 @@ def diagnostics(phone: Any, profile: Any = None, agent: Any = None) -> str:
     if profile is not None:
         row("profile", f"{profile.name}  ({profile.space})")
     row("sip stack", "installed" if sp.available() else
-        f"not installed - {sp.INSTALL_HINT}")
+        f"stack did not load - {sp.INSTALL_HINT}")
 
     device = getattr(phone, "device", None)
     out.append("")

@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swsh.softphone import Device, Softphone, available
+from swsh.softphone import INSTALL_HINT, Device, Softphone, available
 
 CALLER_PORT, CALLEE_PORT = 15080, 15081
 
@@ -62,7 +62,7 @@ asyncio.run(main())
 
 async def main() -> int:
     if not available():
-        print("the SIP stack is not installed: pip install --pre 'swsh[sip]'")
+        print(f"the SIP stack did not load: {INSTALL_HINT}")
         return 2
 
     callee = subprocess.Popen([sys.executable, "-c", CALLEE],

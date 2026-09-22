@@ -146,7 +146,7 @@ class TestGlobalFlagsBelongToCommands:
     def test_the_flags_do_not_leak_into_the_command_body(self):
         # They are popped before the body runs; a stray kwarg would be a
         # TypeError at call time.
-        result = runner.invoke(cli.app, ["recipe", "list", "--json"])
+        result = runner.invoke(cli.app, ["profile", "list", "--json"])
         assert result.exit_code == 0, result.output
 
     def test_profile_after_the_command_reaches_ctx(self):

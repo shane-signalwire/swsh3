@@ -149,10 +149,10 @@ class TestItRefusesRatherThanMislead:
             assert "--raw" in result.output
 
     def test_it_refuses_before_the_command_does_any_work(self, captured, monkeypatch):
-        """`recipe run` creates things. A refusal afterwards is not a refusal."""
+        """`listen` opens a tunnel and rewrites every number's status callback.
+        A refusal afterwards is not a refusal."""
         monkeypatch.setattr(cli.prompts, "interactive", lambda: False)
-        result = runner.invoke(cli.app, ["recipe", "run", "pbx", "--set", "name=hq",
-                                         "--set", "extensions=2", "--yes", "--raw"])
+        result = runner.invoke(cli.app, ["listen", "--raw"])
         assert result.exit_code == 2
         assert captured == []
 

@@ -20,6 +20,11 @@ import os
 # Everything Rich consults for colour, plus the two that set the wrap width.
 for _forced in ("FORCE_COLOR", "CLICOLOR_FORCE", "CLICOLOR", "COLORTERM"):
     os.environ.pop(_forced, None)
+# Belt as well as braces: `_autoinstall_completion` reads the streams rather
+# than `prompts.interactive()`, so a test patching that cannot reach it — but a
+# suite that appends to the developer's own ~/.zshrc once has earned a second
+# lock on the door.
+os.environ["SWSH_NO_COMPLETION_INSTALL"] = "1"
 os.environ["NO_COLOR"] = "1"
 os.environ["TERM"] = "dumb"
 # Wide enough that no help table wraps a flag or a field name.

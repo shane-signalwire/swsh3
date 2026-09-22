@@ -28,7 +28,7 @@ from rich.panel import Panel
 from rich.text import Text
 from typer._completion_classes import completion_init as _completion_init
 
-from . import __version__, config, prompts, recipes, resources, routing, spec, ui
+from . import __version__, config, prompts, resources, routing, spec, ui
 from .client import SwshClient, SwshError, _describe
 from .client import next_page as client_next_page
 from .config import (
@@ -142,11 +142,7 @@ logs_app = resource_app("logs")
 
 profile_app = typer.Typer(cls=_PrefixGroup, name="profile", no_args_is_help=True,
                           help="Manage credential profiles.")
-recipe_app = typer.Typer(cls=_PrefixGroup, name="recipe",
-                         help="Guided multi-step setups (preview, unverified).",
-                         no_args_is_help=True)
 app.add_typer(profile_app)
-app.add_typer(recipe_app)
 
 
 class Ctx:
@@ -251,8 +247,8 @@ def _absorb_global_flags(kwargs: dict[str, Any]) -> None:
 #   not the list its handle lookup happened to need first.
 # - **A command with no single response says so, first.** `raw_capable` marks
 #   the ones that have one; every other command refuses `--raw` before its body
-#   runs, because `sw recipe run x --raw` must not create six resources and
-#   suppress the output before admitting it cannot answer.
+#   runs, because `sw listen --raw` must not open a tunnel and rewrite every
+#   number's status callback before admitting it cannot answer.
 
 
 def raw_capable(fn):
@@ -482,6 +478,10 @@ def main_callback(
     if ctx.invoked_subcommand is None:
         ui.console.print(ctx.get_help())
         raise typer.Exit()
+    # Not in front of `sw completion ...` itself: installing completion one line
+    # above the uninstall someone just asked for is its own kind of rude.
+    if ctx.invoked_subcommand != "completion":
+        _autoinstall_completion()
 
 
 # -------------------------------------------------------------------------- sh
@@ -596,6 +596,94 @@ def _completion_state(shell: str) -> list[dict[str, Any]]:
                      "installed": script.is_file(), "rc": rc,
                      "rc_line": line, "rc_line_present": rc_present})
     return rows
+
+
+# Completion is set up on first use rather than asked for. Typing `sw numb<TAB>`
+# and getting nothing is how most people conclude a CLI has no completion, and
+# `--install-completion` is a thing you have to already know exists. pip cannot
+# do it: installing a wheel runs no code, so the first interactive run is the
+# earliest honest moment.
+#
+# Three rules keep that from being presumptuous:
+#
+# - **Only in a real terminal**, read off the streams themselves rather than
+#   through `prompts.interactive()`. Whether to *prompt* and whether to *edit
+#   someone's shell configuration* are different questions, and tests patch the
+#   first one to True all the time to exercise a confirmation. One that did
+#   exactly that appended to the developer's real `~/.zshrc`, which is the
+#   thing this whole module is supposed not to do.
+# - **Once, ever.** The marker is written whatever the outcome — installed,
+#   unsupported shell, or failed — so `sw completion uninstall` is final and a
+#   shell we cannot detect is not re-probed on every command.
+# - **It says what it did.** One line naming the file, and the command that
+#   undoes it. A tool that edits your shell configuration in silence is worse
+#   than one that does not offer completion at all.
+AUTO_COMPLETION_ENV = "SWSH_NO_COMPLETION_INSTALL"
+
+
+def _on_a_terminal() -> bool:
+    """Both streams are a real terminal.
+
+    Deliberately not `prompts.interactive()`, which is the same test but is a
+    *policy* about prompting that tests patch to True to exercise a
+    confirmation. One of them did, and appended to the developer's own
+    `~/.zshrc`. This is its own function so a test can say "not a terminal"
+    without reaching into whatever object pytest's capture has put in
+    `sys.stdout`.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _completion_marker() -> Path:
+    """Records that first-run setup has happened, next to the config file."""
+    return config.config_path().parent / "completion-attempted"
+
+
+def _mark_completion_attempted() -> None:
+    marker = _completion_marker()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        pass  # a read-only home is not a reason to fail the command
+
+
+def _autoinstall_completion() -> None:
+    """Install completion the first time `sw` runs in a terminal."""
+    if os.environ.get(AUTO_COMPLETION_ENV):
+        return
+    if not _on_a_terminal():
+        return
+    if _completion_marker().exists():
+        return
+
+    shell = _current_shell()
+    if shell not in _COMPLETION_LAYOUT:
+        _mark_completion_attempted()
+        return
+    if any(row["installed"] for row in _completion_state(shell)):
+        _mark_completion_attempted()
+        return
+
+    from typer._completion_shared import install as typer_install
+
+    try:
+        _, path = typer_install(shell=shell, prog_name="sw")
+    except Exception:
+        # Silent: this is running in front of the command someone actually
+        # typed, and a completion script is not what they came for.
+        _mark_completion_attempted()
+        return
+
+    _mark_completion_attempted()
+    # `soft_wrap` so the path and the undo command are never broken across a
+    # line: a wrapped `sw completion uninstall` is not one you can copy.
+    ui.console.print(
+        f"[muted]tab completion installed for {shell}:[/muted] [brand]{path}[/brand]",
+        soft_wrap=True)
+    ui.console.print(
+        "[muted]active in a new shell; undo with[/muted] "
+        "[brand]sw completion uninstall[/brand]", soft_wrap=True)
 
 
 @completion_app.command("status")
@@ -718,6 +806,11 @@ def completion_uninstall(
         ui.fail(f"cannot clean up completion for shell: {target or 'unknown'}")
         ui.hint(f"Pass --shell with one of: {', '.join(sorted(_COMPLETION_LAYOUT))}")
         raise typer.Exit(2)
+
+    # Whatever this call finds, first-run setup must not put it back on the next
+    # command. That holds for `no completion installed` too: someone uninstalling
+    # pre-emptively has said what they want.
+    _mark_completion_attempted()
 
     progs = _PROG_NAMES if all_progs else ("sw",)
     rows = [r for r in _completion_state(target) if r["program"] in progs]
@@ -2459,93 +2552,6 @@ def listen(
 def _call_json(call: Any) -> dict[str, Any]:
     """sw's shape of a call. The cockpit's detail pane renders the same dict."""
     return call.as_json()
-
-
-# ------------------------------------------------------------------- recipes
-
-
-def _complete_recipe(incomplete: str) -> list[str]:
-    return [r.key for r in recipes.RECIPES if r.key.startswith(incomplete)]
-
-
-@recipe_app.command("list")
-@with_global_flags
-def recipe_list() -> None:
-    """Show the available guided setups."""
-    rows = [{"recipe": r.key, "does": r.help} for r in recipes.RECIPES]
-    if Ctx.as_json:
-        ui.emit(rows, as_json=True)
-        return
-    ui.console.print(ui.rows_table(rows, ("recipe", "does"), title="recipes"))
-
-
-@recipe_app.command("run")
-@coro
-async def recipe_run(
-    client: SwshClient,
-    recipe: str = typer.Argument(..., help="Recipe key, e.g. pbx.",
-                                 autocompletion=_complete_recipe),
-    values: list[str] = typer.Option([], "--set", "-s", help="key=value, repeatable."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show the plan; change nothing."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
-) -> None:
-    """Run a guided setup.
-
-    Omit a required value and, in an interactive terminal, sw asks for it. The
-    plan is always shown before anything is created, and every step converges:
-    re-running finds what already exists and reuses it.
-    """
-    target = recipes.get(recipe)
-    if target is None:
-        ui.fail(f"unknown recipe '{recipe}'. Try `sw recipe list`.")
-        raise typer.Exit(2)
-
-    raw = _parse_pairs(values, target)
-    raw = await prompts.fill_missing(
-        target, "create", raw, client,
-        allow_prompt=prompts.interactive() and not Ctx.as_json,
-    )
-    try:
-        ctx = recipes.coerce_params(target, raw)
-    except ValueError as exc:
-        ui.fail(str(exc))
-        raise typer.Exit(2) from exc
-
-    planned = recipes.plan(target, ctx)
-    if not planned:
-        ui.fail("that produced no steps; check the values")
-        raise typer.Exit(2)
-
-    if Ctx.as_json and dry_run:
-        ui.emit([{"label": p.step.label, "method": p.method, "path": p.path,
-                  "body": p.body} for p in planned], as_json=True)
-        return
-
-    ui.console.print(ui.rows_table(
-        [{"step": p.step.label, "method": p.method, "path": p.path} for p in planned],
-        ("step", "method", "path"),
-        title=f"{target.title}: {len(planned)} steps",
-    ))
-    if dry_run:
-        ui.console.print("[dim]dry run: nothing was created[/dim]")
-        return
-
-    if not yes and prompts.interactive() and not Ctx.as_json:
-        if not typer.confirm(f"Run these {len(planned)} steps?"):
-            ui.console.print("[dim]cancelled[/dim]")
-            return
-
-    results = await recipes.run(target, ctx, client)
-    if Ctx.as_json:
-        ui.emit([{"step": r.label, "action": r.action, "detail": r.detail}
-                 for r in results], as_json=True)
-    else:
-        ui.console.print(ui.rows_table(
-            [{"step": r.label, "action": r.action, "detail": r.detail} for r in results],
-            ("step", "action", "detail"), title="result",
-        ))
-    if any(r.action == "failed" for r in results):
-        raise typer.Exit(1)
 
 
 # Generate the noun groups last, so every hand-written command above is already

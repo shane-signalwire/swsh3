@@ -40,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swsh.softphone import available
+from swsh.softphone import INSTALL_HINT, available
 
 PORT = 15099
 DOMAIN = "example-0123456789ab.sip.signalwire.com"
@@ -61,7 +61,7 @@ TARGETS = (
 
 async def main() -> int:
     if not available():
-        print("the SIP stack is not installed: pip install --pre 'swsh[sip]'")
+        print(f"the SIP stack did not load: {INSTALL_HINT}")
         return 2
     import baresip
 

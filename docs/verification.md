@@ -40,7 +40,6 @@ definition before it ships:
 | `test_resources.py::TestVerifiedAgainstLiveProject` | a guess quietly replacing something a live probe already settled |
 | `test_spec_catalog.py::TestExactRoutes` | a regenerated catalog losing an exact method or path — the 10DLC `registry/beta` prefix, the singleton `sip_profile`, the two POST-not-GET JSON-RPC endpoints |
 | `test_coverage.py` | a spec operation that is neither covered nor excluded-with-a-reason; the ratchet regressing |
-| `test_recipes.py::TestShippedRecipes` | a recipe step naming an operation that does not exist |
 | `test_field_audit.py` | a resource whose fields matched the documented request body drifting away from it |
 | `test_tables.py` | an identifier elided out of a listing; an empty collection drawn as a row of nulls |
 

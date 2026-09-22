@@ -15,6 +15,7 @@ done in-process (the stack allows one runtime per process), and
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -196,7 +197,7 @@ class TestTheDeviceKnowsWhereToRegisterAndWhatToDial:
         traceback."""
         def missing() -> Any:
             raise softphone.SoftphoneError(
-                f"the SIP stack is not installed: {softphone.INSTALL_HINT}")
+                f"the SIP stack did not load: {softphone.INSTALL_HINT}")
 
         monkeypatch.setattr(softphone, "_stack", missing)
         phone = softphone.Softphone()
@@ -211,16 +212,36 @@ class TestTheDeviceKnowsWhereToRegisterAndWhatToDial:
         "sw 0.0.1 does not provide the extra 'sip'" in the middle of its own
         output, exited 0, and the phone then correctly reported a SIP stack
         that had never been asked for. The name in the hint has to be the one
-        in `[project] name`.
+        in `[project] name`, whatever else about the install changes.
         """
         import tomllib
 
         pyproject = tomllib.loads(
             (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes().decode())
         dist = pyproject["project"]["name"]
-        extra = next(iter(pyproject["project"]["optional-dependencies"]))
         assert dist == "swsh"
-        assert f"{dist}[{extra}]" in softphone.INSTALL_HINT
+        assert dist in softphone.INSTALL_HINT
+        # never the console script as though it were a package
+        assert not re.search(r"(?<![\w-])sw(?![\w-])", softphone.INSTALL_HINT)
+
+    def test_the_sip_stack_ships_with_sw(self):
+        """It was an extra, which meant the cockpit's phone was a second install
+        step nobody took, and `sw sh` opened on a panel saying so. It is a
+        dependency now: `pip install swsh` gets a working phone.
+
+        The specifier names a pre-release on purpose. pip refuses pre-release
+        versions unless the specifier itself mentions one, so `>=0.5.1a1` is
+        what makes this resolve with no `--pre` at the call site.
+        """
+        import tomllib
+
+        pyproject = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes().decode())
+        deps = pyproject["project"]["dependencies"]
+        sip = next((d for d in deps if d.startswith("baresip-python")), None)
+        assert sip is not None, deps
+        assert re.search(r"\d+\.\d+\.\d+(a|b|rc)\d+", sip), sip
+        assert "sip" not in pyproject["project"].get("optional-dependencies", {})
 
 
 class TestTheStacksEventsBecomeStateAPanelCanRender:
@@ -452,7 +473,7 @@ class TestThePhoneIsAPanelOnCalls:
     async def test_the_panel_renders_both_halves(self):
         """Guarded on the stack: with none installed the panel is one line —
         the install hint — and neither half has anything to render."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         app = SwshApp(profile=FAKE)
         async with app.run_test(size=(150, 45)) as pilot:
             app.action_go_calls()
@@ -886,7 +907,7 @@ class TestTheInteropKnobs:
         A value outside them is a TypeError at registration, so offering one in
         a picker would be a keystroke that raises.
         """
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         import inspect
         import typing
 
@@ -1019,14 +1040,14 @@ class TestTheInviteNamesNoTransportUnlessAsked:
         return aor.partition(">")[0]
 
     def test_the_uri_names_no_transport_by_default(self):
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         device = softphone.Device(username="alice", password="pw", domain=self.DOMAIN)
         assert ";transport=" not in self._uri(softphone.aor_of(device))
 
     def test_naming_one_puts_it_back(self):
         """Because that is the only place baresip reads the transport from, so
         `tcp` and `tls` cannot be had without the parameter."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         for transport in ("udp", "tcp", "tls"):
             device = softphone.Device(username="alice", password="pw",
                                       domain=self.DOMAIN, transport=transport)
@@ -1034,7 +1055,7 @@ class TestTheInviteNamesNoTransportUnlessAsked:
 
     def test_everything_after_the_uri_is_left_as_the_library_wrote_it(self):
         """Re-rendering the line here is how it would drift from the library."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         device = softphone.Device(username="alice", password="pw", domain=self.DOMAIN,
                                   registrar="proxy.example.net", codecs=("opus",),
                                   dtmf_mode="info", reg_interval=120)
@@ -1048,7 +1069,7 @@ class TestTheInviteNamesNoTransportUnlessAsked:
         """`regint=0` is how baresip is told not to register, and with a raw
         AOR the library finds that by text — so stripping must not disturb it,
         or `register()` would sit there timing out instead of refusing."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         import re
 
         from baresip.ua import _REGINT_ZERO
@@ -1090,7 +1111,7 @@ class TestWhatIsOnScreenCanBeQuoted:
 
     def test_the_account_line_is_in_it(self):
         """The whole reason the block exists: it shows what goes on the wire."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         from swsh.tui import lab
 
         text = lab.diagnostics(self._phone(), FAKE)
@@ -1098,7 +1119,7 @@ class TestWhatIsOnScreenCanBeQuoted:
         assert f"<sip:alice@{self.DOMAIN}>" in text
 
     def test_naming_a_transport_shows_up_in_it(self):
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         from swsh.tui import lab
 
         text = lab.diagnostics(self._phone(transport="tcp"), FAKE)
@@ -1106,7 +1127,7 @@ class TestWhatIsOnScreenCanBeQuoted:
 
     def test_the_password_never_leaves_the_device(self):
         """It is pasted into tickets, so a credential in it would be a leak."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         from swsh.tui import lab
 
         text = lab.diagnostics(self._phone(), FAKE)
@@ -1199,7 +1220,7 @@ class TestTheSipTraceActuallyTraces:
 
     def test_tracing_raises_the_native_level(self):
         """A trace the native stack filters out never reaches the logger."""
-        pytest.importorskip("baresip", reason="the SIP stack is an optional extra")
+        pytest.importorskip("baresip", reason="no SIP wheel for this platform")
         import inspect
 
         source = inspect.getsource(softphone.Softphone.start)

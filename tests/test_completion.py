@@ -287,3 +287,111 @@ class TestPathWarning:
 
         out = runner.invoke(cli.app, ["completion", "install", "--shell", "zsh"]).output
         assert "silently do nothing" in out
+
+
+class TestItIsSetUpWithoutBeingAskedFor:
+    """`--install-completion` is a thing you have to already know exists, and
+    typing `sw numb<TAB>` and getting nothing is how people conclude a CLI has
+    none. pip cannot do it — installing a wheel runs no code — so the first
+    interactive run is the earliest honest moment.
+    """
+
+    @pytest.fixture
+    def first_run(self, home, monkeypatch):
+        """A terminal, a known shell, and nothing installed yet."""
+        marker = home / "config" / "completion-attempted"
+        monkeypatch.setattr(cli, "_completion_marker", lambda: marker)
+        monkeypatch.setattr(cli, "_on_a_terminal", lambda: True)
+        monkeypatch.setattr(cli, "_current_shell", lambda: "zsh")
+        monkeypatch.delenv(cli.AUTO_COMPLETION_ENV, raising=False)
+        installed: list[tuple] = []
+
+        def fake_install(shell=None, prog_name=None):
+            (home / ".zfunc").mkdir(exist_ok=True)
+            path = home / ".zfunc" / f"_{prog_name}"
+            path.write_text("# completion\n")
+            installed.append((shell, prog_name))
+            return shell, path
+
+        monkeypatch.setattr("typer._completion_shared.install", fake_install)
+        return installed, marker
+
+    def test_the_first_run_in_a_terminal_installs_it(self, first_run):
+        installed, marker = first_run
+        cli._autoinstall_completion()
+        assert installed == [("zsh", "sw")]
+        assert marker.exists()
+
+    def test_it_says_what_it_wrote_and_how_to_undo_it(self, first_run, capsys):
+        """Editing someone's shell configuration in silence is worse than not
+        offering completion at all."""
+        cli._autoinstall_completion()
+        out = capsys.readouterr().out
+        assert "completion" in out
+        assert "sw completion uninstall" in out
+
+    def test_it_happens_once_however_it_turned_out(self, first_run):
+        installed, _ = first_run
+        cli._autoinstall_completion()
+        cli._autoinstall_completion()
+        assert len(installed) == 1
+
+    def test_an_uninstall_is_final(self, first_run, monkeypatch):
+        """Reinstalling on the next command would make `uninstall` a no-op."""
+        installed, marker = first_run
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        runner.invoke(cli.app, ["completion", "uninstall", "--shell", "zsh", "--yes"])
+        assert marker.exists()
+        cli._autoinstall_completion()
+        assert installed == []
+
+    def test_a_pipe_or_a_ci_job_is_never_touched(self, first_run, monkeypatch):
+        """The same guard is what keeps the suite out of a developer's ~/.zshrc."""
+        installed, marker = first_run
+        monkeypatch.setattr(cli, "_on_a_terminal", lambda: False)
+        cli._autoinstall_completion()
+        assert installed == [] and not marker.exists()
+
+    def test_pretending_a_prompt_is_possible_does_not_open_the_door(
+            self, first_run, monkeypatch):
+        """`prompts.interactive()` is patched to True by tests exercising a
+        confirmation. One of them appended to the developer's real ~/.zshrc,
+        because this guard used to read that instead of the streams."""
+        installed, marker = first_run
+        monkeypatch.setattr(cli, "_on_a_terminal", lambda: False)
+        monkeypatch.setattr(cli.prompts, "interactive", lambda: True)
+        cli._autoinstall_completion()
+        assert installed == [] and not marker.exists()
+
+    def test_it_can_be_switched_off(self, first_run, monkeypatch):
+        installed, marker = first_run
+        monkeypatch.setenv(cli.AUTO_COMPLETION_ENV, "1")
+        cli._autoinstall_completion()
+        assert installed == [] and not marker.exists()
+
+    def test_a_shell_it_cannot_place_is_not_probed_again(self, first_run, monkeypatch):
+        installed, marker = first_run
+        monkeypatch.setattr(cli, "_current_shell", lambda: None)
+        cli._autoinstall_completion()
+        assert installed == []
+        assert marker.exists(), "an unknown shell must not be re-detected every command"
+
+    def test_an_existing_installation_is_left_alone(self, first_run, home):
+        installed, marker = first_run
+        (home / ".zfunc").mkdir()
+        (home / ".zfunc" / "_sw").write_text("# already here\n")
+        cli._autoinstall_completion()
+        assert installed == []
+        assert marker.exists()
+
+    def test_a_failed_install_is_silent_and_not_retried(self, first_run, monkeypatch, capsys):
+        """It runs in front of the command someone actually typed."""
+        _, marker = first_run
+
+        def boom(shell=None, prog_name=None):
+            raise RuntimeError("no")
+
+        monkeypatch.setattr("typer._completion_shared.install", boom)
+        cli._autoinstall_completion()
+        assert capsys.readouterr().out == ""
+        assert marker.exists()

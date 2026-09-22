@@ -8,15 +8,15 @@ missing half: a registered device that dials, answers, sends DTMF and carries
 real audio, driven from the cockpit.
 
 It is `baresip-python` underneath — the baresip SIP stack with an asyncio API
-and no system dependencies, since the wheels bundle libre and libbaresip. That
-is an **optional** dependency, and a pre-release one:
+and no system dependencies, since the wheels bundle libre and libbaresip. It is
+installed with `sw`.
 
-    pip install --pre 'swsh[sip]'
-
-Nothing here imports it at module import time. `available()` answers whether the
-stack is installed, and every entry point raises `SoftphoneError` naming the
-install line rather than an ImportError traceback, because a missing optional
-dependency is a setup step, not a bug.
+Nothing here imports it at module import time, and `available()` still answers
+whether the stack loaded. Being a dependency is not the same as being present:
+the wheels are per-platform, and an environment that could not get one should
+say so in one line on the panel rather than take the whole cockpit down with an
+ImportError at startup. So every entry point raises `SoftphoneError` naming the
+reinstall line instead.
 
 Two things about the design are deliberate:
 
@@ -40,7 +40,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-INSTALL_HINT = "pip install --pre 'swsh[sip]'"
+# Names the distribution, never the console script: `sw` on PyPI is an
+# unrelated project by someone else, and a hint that said `sw` had people
+# installing it, seeing "does not provide the extra", and exiting 0.
+INSTALL_HINT = "pip install --force-reinstall swsh"
 
 # What a device can do with audio. `coreaudio` is the mic and speakers (macOS);
 # `aumem` is silence with the PCM readable from code, which is what a headless
@@ -76,7 +79,11 @@ class SoftphoneError(RuntimeError):
 
 
 def available() -> bool:
-    """Whether the SIP stack is installed."""
+    """Whether the SIP stack loaded.
+
+    It ships with `sw`, so this is normally true. It is still asked, because a
+    platform with no wheel is a one-line panel message and not a crash.
+    """
     try:
         import baresip  # noqa: F401
     except Exception:
@@ -87,9 +94,9 @@ def available() -> bool:
 def _stack() -> Any:
     try:
         import baresip
-    except Exception as exc:  # the install line, not a traceback
+    except Exception as exc:  # the reinstall line, not a traceback
         raise SoftphoneError(
-            f"the SIP stack is not installed: {INSTALL_HINT}"
+            f"the SIP stack did not load: {INSTALL_HINT}"
         ) from exc
     return baresip
 
@@ -288,7 +295,7 @@ def redacted_aor(device: Device) -> str:
     `auth_pass` at all reads as a device configured without one.
     """
     if not available():
-        return f"the SIP stack is not installed: {INSTALL_HINT}"
+        return f"the SIP stack did not load: {INSTALL_HINT}"
     try:
         aor = aor_of(device)
     except Exception as exc:

@@ -1706,7 +1706,7 @@ class SwshApp(App[None]):
         if self.view != "calls":
             return
         if not softphone.available():
-            self.notify(f"the SIP stack is not installed: {softphone.INSTALL_HINT}",
+            self.notify(f"the SIP stack did not load: {softphone.INSTALL_HINT}",
                         severity="warning", timeout=8)
             return
         if self.phone.state in (softphone.REGISTERED, softphone.REGISTERING):

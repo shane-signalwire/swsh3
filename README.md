@@ -27,7 +27,6 @@
   - [Calls](#calls)
   - [`sw api` — the escape hatch](#sw-api--the-escape-hatch)
   - [`sw listen` — receiving callbacks](#sw-listen--receiving-callbacks)
-  - [Recipes](#recipes)
   - [Tab completion](#tab-completion)
 - [The cockpit: `sw sh`](#the-cockpit-sw-sh)
   - [Getting around](#getting-around)
@@ -46,7 +45,7 @@
 Python 3.11 or newer.
 
 ```bash
-git clone https://github.com/signalwire/swsh3.git
+git clone https://github.com/shane-signalwire/swsh3.git
 cd swsh3
 python3 -m venv .venv
 .venv/bin/pip install -e .
@@ -65,19 +64,13 @@ Put `.venv/bin` on your `PATH`, or install it globally with
 uv tool install .
 ```
 
-### The SIP softphone is optional
+That is the whole install. The cockpit's SIP phone — a real registered endpoint
+with real audio — comes with it; there is no second step and no extra to ask
+for.
 
-The cockpit's phone is a real registered SIP endpoint with real audio, built on
-`baresip-python`. It is a pre-release binary wheel, so it is an **extra** rather
-than a dependency — everything else in `sw` works without a SIP stack:
-
-```bash
-pip install --pre 'swsh[sip]'
-```
-
-Note the name: the **distribution** is `swsh`, the **command** is `sw`. `sw` on
-PyPI is an unrelated package by someone else, and `pip install 'sw[sip]'` will
-quietly install that instead.
+Note the name if you ever install by name rather than from this checkout: the
+**distribution** is `swsh`, the **command** is `sw`. `sw` on PyPI is an
+unrelated package by someone else.
 
 ---
 
@@ -232,9 +225,9 @@ sw numbers list --json | jq -r '.[].number'
 sw numbers get "Fax Number" --raw | jq '.'
 ```
 
-`--raw` implies `--json`. A command with no single response — `sw recipe run`,
-for instance — refuses `--raw` *before* it runs anything, rather than doing the
-work with the output suppressed and then admitting it cannot answer.
+`--raw` implies `--json`. A command with no single response — `sw listen`, for
+instance — refuses `--raw` *before* it runs anything, rather than doing the work
+with the output suppressed and then admitting it cannot answer.
 
 Without `--json`, a single row prints as a field/value table rather than a blob:
 every key the API sent, in the order it sent them, `-` for a null and `""` for an
@@ -313,32 +306,45 @@ callback as it arrives, and puts the original URLs back on exit. The originals
 are journalled to disk *first*, so an unclean exit is recoverable with
 `--restore`.
 
-### Recipes
+### Tab completion
 
-A recipe is a job that is a dozen API calls and one sentence to a person.
+**You do not have to set this up.** The first time you run `sw` in a terminal it
+installs completion for your shell, says which file it wrote, and tells you how
+to undo it:
 
-```bash
-sw recipe list
-sw recipe run pbx --dry-run         # print the resolved plan, change nothing
-sw recipe run pbx --name acme --extensions 4
+```
+$ sw whoami
+tab completion installed for zsh: ~/.zfunc/_sw
+active in a new shell; undo with sw completion uninstall
 ```
 
-Recipes are **preview**. A recipe never deletes and never diffs: it is an ordered
-list of creates with ensure-by-name, so re-running one converges rather than
-duplicating. `--dry-run` needs no credentials and is the reviewable step.
+It happens **once**, and only in a real terminal — a pipe, a CI job or a
+Dockerfile never has its shell startup file touched. Open a new shell (or
+`exec $SHELL`) and `sw numb<TAB>` completes to `numbers`, then to its verbs,
+then to the fields each verb takes.
 
-### Tab completion
+Installing a Python wheel runs no code, so first use is the earliest point at
+which this can happen at all. To opt out entirely, set
+`SWSH_NO_COMPLETION_INSTALL=1` before the first run.
+
+The commands are still there if you want to drive it by hand — after an
+uninstall, `install` is how you get it back, because the automatic setup does
+not undo your decision:
 
 ```bash
 sw completion install               # bash, zsh, fish
+sw completion install --shell zsh   # skip shell detection
 sw completion status                # which files hold it, if any
-sw completion uninstall
+sw completion uninstall             # final; first-run setup will not redo it
 sw completion show                  # print the script without installing
 ```
 
-Completion invokes `sw` by name, so `sw` has to be on your `PATH` in a *new*
-terminal. Installed with `pip install -e .` into a project venv it is not, and
-`completion install` warns when it detects that.
+One catch worth knowing: completion invokes `sw` by name, so `sw` has to be on
+your `PATH` in a *new* terminal. Installed with `pip install -e .` into a
+project venv it is not — `sw` only exists while that venv is active —
+and completion will silently do nothing until you install it somewhere durable
+(`uv tool install .`, or `pipx`). `sw completion install` warns when it detects
+this.
 
 ---
 
@@ -411,7 +417,7 @@ status callbacks and an adaptive poller. Under it rides a phone panel holding tw
 things that exist to test each other:
 
 - **a SIP device** — a real registered endpoint with real audio, dialling out and
-  answering in (needs the `sip` extra);
+  answering in;
 - **a local AI agent** — built from a prompt, a greeting, a voice and a set of
   skills, served locally, tunnelled, and wired into Call Fabric as a SWML webhook
   plus a SIP address, so a phone can dial it.
@@ -523,7 +529,6 @@ swsh/
   cli.py          Typer app; every registry resource becomes a command group
   resources.py    THE REGISTRY — 54 resources, 52 of them spec-driven REST
   routing.py      get --full: resolve a row's live handler and follow it
-  recipes.py      guided composites
   client.py       one client; invoke(resource, op, ...) dispatches by transport
   spec.py         the bundled OpenAPI catalog (332 operations, 15 APIs)
   coverage.py     the completeness gate
@@ -546,10 +551,9 @@ dependency on the spec repo. To regenerate it you must compile the OpenAPI first
 ## Known limitations
 
 - **Alpha, for internal distribution.** Not published to PyPI.
-- **The SIP softphone is an optional pre-release wheel** and is not available on
-  every platform. Everything else works without it.
-- **Recipes are a preview.** `sw recipe run` is unverified against a live space;
-  use `--dry-run` first.
+- **The SIP stack is a pre-release wheel** and is not built for every platform.
+  It installs with `sw`; where no wheel exists the phone panel says so in one
+  line and the rest of the tool is unaffected.
 - **`sw listen --verify-signatures` is unverified.** The HMAC validation path has
   not been confirmed against live callbacks.
 - **The Compatibility/LaML API is deliberately not modelled** as resources. It is
