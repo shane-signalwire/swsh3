@@ -135,8 +135,14 @@ Beyond the five verbs, a resource offers whatever *actions* it has:
 ```bash
 sw numbers assign-e911-address +15551234567 --e911-address-id <id>
 sw brands campaigns <brand-id>
+sw brands orders <campaign-id>
 sw subscribers tokens <subscriber-id>
 ```
+
+Where the platform nests one thing under another — an order under a campaign
+under a brand — the child is reached through its parent rather than as a group
+of its own, because a `sw orders list` with nowhere to put the campaign id
+could only ever return an error.
 
 `sw <group> --help` lists what a group can do; `sw <group> <verb> --help` names
 every field the verb takes.
@@ -155,7 +161,11 @@ sw numbers list -m 209            # searches number and name
 sw sip list -m support
 ```
 
-The command's `--help` names the fields `--match` will look in.
+`-n` means what it says: `sw` follows the API's paging until it has that many
+rows or the collection runs out, so `-n 200` returns 200 and not one page of 50.
+`--match` walks the **whole** collection before answering, because a search that
+stops at the first page can report "no rows" about a record that is simply
+further down. The command's `--help` names the fields it will look in.
 
 ### Finding a row without knowing its id
 
@@ -560,10 +570,6 @@ dependency on the spec repo. To regenerate it you must compile the OpenAPI first
   reachable in full through `sw api`.
 - **`sw cxml list` can return a 500** server-side if the project holds an orphaned
   `cxml_script`. `sw` surfaces the error rather than hiding it.
-- **`sw orders list` cannot run on its own.** Its route is
-  `/registry/beta/campaigns/{id}/orders`, so it needs a campaign id that the
-  generated command has nowhere to take. `sw orders get <order-id>` works.
-  Reach the listing with `sw api list_orders -p id=<campaign-id>` meanwhile.
 - **`sw gateways update` needs the whole SIP configuration.** The platform
   validates that route as a full replace, so a partial `--set encryption=…` is
   refused with `missing_sip_configuration`. Resend `name`, `uri`, `encryption`,

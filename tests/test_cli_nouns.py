@@ -253,6 +253,42 @@ class TestGeneratedVerbs:
         assert captured == []
 
 
+class TestNoGeneratedCommandCanBeUnusable:
+    """A verb whose route needs an id it cannot accept is worse than a missing
+    one: it reads as a broken tool rather than as a thing reached another way.
+
+    `sw orders list` and `sw campaigns list` were both generated from
+    `rest_ops` and answered `needs a resource id` on every invocation, for
+    every user, on every project — their routes are
+    `/registry/beta/campaigns/{id}/orders` and `/registry/beta/brands/{id}/campaigns`.
+    """
+
+    def test_no_listing_or_create_needs_an_id_it_cannot_take(self):
+        offenders = [
+            (r.key, op) for r in resources.RESOURCES for op in cli._cli_ops(r)
+            if op not in cli._ID_TAKING
+            and resources.route_placeholders(r.rest_ops.get(op, ""), r.api)
+        ]
+        assert offenders == []
+
+    def test_the_four_that_used_to_exist_are_gone(self):
+        for group, verb in (("orders", "list"), ("orders", "create"),
+                            ("campaigns", "list"), ("campaigns", "create")):
+            result = runner.invoke(cli.app, [group, verb, "--help"])
+            assert result.exit_code != 0, (group, verb)
+
+    def test_but_the_listings_are_still_reachable_from_the_parent(self):
+        """Dropping a command is only right if the capability survives."""
+        out = runner.invoke(cli.app, ["brands", "--help"]).output
+        assert "campaigns" in out
+        assert "orders" in out
+
+    def test_an_id_taking_verb_keeps_its_placeholder_route(self):
+        """`sw orders get <id>` is fine: the placeholder *is* the argument."""
+        assert "read" in cli._cli_ops(resources.get("orders"))
+        assert runner.invoke(cli.app, ["orders", "get", "--help"]).exit_code == 0
+
+
 class TestIdentifiersAndMatching:
     """`get` takes a handle, not only a uuid, and `list` can be filtered.
 

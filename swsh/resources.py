@@ -348,12 +348,28 @@ class Resource:
         where the id can be typed. What they cannot be is a menu entry, because
         that opens a door onto a wall.
         """
-        if self.can_list or self.is_singleton:
+        if self.lists_standalone or self.is_singleton:
             return True
         if self.can_create and not route_placeholders(
                 self.rest_ops.get("create", ""), self.api):
             return True
         return any(self.serves_itself(e) for e in self.extras)
+
+    @property
+    def lists_standalone(self) -> bool:
+        """Whether ``list`` can run without an id the screen cannot supply.
+
+        ``can_list`` was enough here once, and it is not: a capability letter
+        says the operation exists, not that its route is reachable. `orders`
+        lists at ``/registry/beta/campaigns/{id}/orders`` — a real list, on a
+        route that needs a campaign nobody has selected — so it claimed a screen
+        of its own, got one in the menus and a `sw orders list` in the shell,
+        and every invocation of either answered `orders.list needs a resource
+        id`. The route already knows; ask it.
+        """
+        if not self.can_list:
+            return False
+        return not route_placeholders(self.rest_ops.get("list", ""), self.api)
 
     def serves_itself(self, extra: Extra) -> bool:
         """Whether an extra can run from the list screen with nothing selected.
@@ -548,8 +564,17 @@ RESOURCES: tuple[Resource, ...] = (
             _f("company_vertical"), _f("company_address"),
             _f("status_callback_url"),
         ),
-        extras=(Extra("c", "campaigns", "list_campaigns", spec_op="list_campaigns"),),
-        help="Brand registrations; each brand lists its campaigns.",
+        extras=(
+            Extra("c", "campaigns", "list_campaigns", spec_op="list_campaigns"),
+            # Orders hang off a campaign, which hangs off a brand. Reached from
+            # the rows of the campaigns drill, which is the only place a
+            # campaign id is in hand — the same shape as `remove member` on a
+            # number group's memberships.
+            Extra("o", "orders", "list_orders", on_drill="campaigns",
+                  spec_op="list_orders"),
+        ),
+        help="Brand registrations; each brand lists its campaigns, and each "
+             "campaign its number orders.",
     ),
     # ----------------------------------------------------------------- numbers
     Resource(
@@ -1074,6 +1099,11 @@ RESOURCES: tuple[Resource, ...] = (
     Resource(
         key="orders", title="number orders", namespace="", caps="LCR",
         group="messaging", transport="rest", api="relay-rest",
+        # Both the listing and the create hang off a campaign
+        # (`/registry/beta/campaigns/{id}/orders`), so this is a drill like
+        # `campaigns` itself, not a collection with a screen. `sw orders get
+        # <order-id>` still works from a shell, where the id can be typed.
+        drill_from="campaigns",
         rest_ops={
             "list": "list_orders", "create": "create_order", "read": "retrieve_order",
         },

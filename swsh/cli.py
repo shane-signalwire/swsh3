@@ -1629,9 +1629,6 @@ _FORM_PREFIX = "/api/laml/"
 # appears in 52 of the 79 compat operations.
 _PROFILE_PLACEHOLDERS = ("AccountSid", "project", "project_id", "ProjectId")
 
-_PAGE_CAP = 100
-
-
 def _complete_operation(incomplete: str) -> list[tuple[str, str]]:
     """Completion over every catalog operation. Pure, so <TAB> hits no network."""
     out: list[tuple[str, str]] = []
@@ -2011,13 +2008,31 @@ def _parse_pairs(pairs: list[str], target: Any) -> dict[str, Any]:
     return body
 
 
+# `read`, `update` and `delete` take an id as their argument, so a placeholder
+# in their route is the thing the user typed. `list` and `create` take no id,
+# so a placeholder in *their* route is one the command has nowhere to accept.
+_ID_TAKING = ("read", "update", "delete")
+
+
 def _cli_ops(resource: resources.Resource) -> list[str]:
-    """The CRUD ops the CLI offers: the declared caps plus any CRUD route in
-    ``rest_ops``, which is what the coverage gate counts as reachable."""
+    """The CRUD ops the CLI offers.
+
+    The declared caps plus any CRUD route in ``rest_ops`` — which is what the
+    coverage gate counts as reachable — **less the ones whose route needs a
+    parent id the command cannot take**. `sw orders list` and `sw campaigns
+    list` were generated from `rest_ops` and answered `needs a resource id`
+    every single time, for every user, on every project. A command that cannot
+    succeed is worse than a missing one: it reads as a broken tool rather than
+    as a thing reached another way. Both listings are reached through their
+    parent (`sw brands campaigns <id>`, `sw brands orders <campaign-id>`).
+    """
     ops = [op for letter, op in (("L", "list"), ("C", "create"), ("R", "read"),
                                  ("U", "update"), ("D", "delete"))
            if resource.can(letter) or op in resource.rest_ops]
-    return ops
+    return [op for op in ops
+            if op in _ID_TAKING
+            or not resources.route_placeholders(resource.rest_ops.get(op, ""),
+                                                resource.api)]
 
 
 def _registered(sub: typer.Typer) -> set[str]:
@@ -2061,10 +2076,44 @@ def _show_rows(rows: list[dict[str, Any]], columns: list[str], title: str) -> No
     ui.console.print(ui.rows_table(rows, columns, title=title))
 
 
-async def _list_rows(client: SwshClient, resource: resources.Resource,
-                     **params: Any) -> list[dict[str, Any]]:
+# A walk has to stop somewhere. At the platform's 50-row default page this is
+# 5,000 rows, which is past any listing a person reads and well past anything
+# `--limit` asks for; it exists so a project with a runaway collection cannot
+# hang a script rather than to ration ordinary use.
+_PAGE_CAP = 100
+
+
+async def _list_rows(client: SwshClient, resource: resources.Resource, *,
+                     limit: int | None = None, **params: Any) -> list[dict[str, Any]]:
+    """The list route's rows, following the API's paging until ``limit`` is met.
+
+    This used to be one request, with ``--limit`` applied afterwards as a slice
+    of whatever that single page happened to hold. Two things followed, both
+    silent: ``sw logs list -n 200`` answered with 50 rows and no sign there were
+    more, and ``--match`` — which sifts client-side over these rows — reported
+    *no rows* for records that exist further down the collection. A search that
+    confidently says "not found" about something present is worse than one that
+    is slow.
+
+    ``limit=None`` means every page, which is what a search needs. The walk is
+    the one already proven in ``routing._bin_index``: ``next_page`` reads both
+    paging styles the platform uses, and a payload that carries neither — an SDK
+    response, a bare list — ends the loop on the first pass.
+    """
     payload = await client.invoke(resource, "list", **params)
-    return resources.unwrap(payload, resource.data_key)
+    rows = resources.unwrap(payload, resource.data_key)
+    seen: set[str] = set()
+    for _ in range(_PAGE_CAP):
+        if limit is not None and len(rows) >= limit:
+            break
+        link = client_next_page(payload)
+        # A next link that repeats is a malformed envelope, not a page.
+        if not link or link in seen:
+            break
+        seen.add(link)
+        payload = await client.rest_call("GET", link)
+        rows.extend(resources.unwrap(payload, resource.data_key))
+    return rows[:limit] if limit is not None else rows
 
 
 async def _search_rows(client: SwshClient, resource: resources.Resource, query: str,
@@ -2074,8 +2123,14 @@ async def _search_rows(client: SwshClient, resource: resources.Resource, query: 
     Matching happens on the platform wherever the resource declares a
     ``list_filters`` entry for the field, so searching a project with thousands
     of numbers does not mean paging through them. Fields with no declared
-    filter — and resources with none at all — are matched here, over the page
-    the list returned, which is the same page ``list`` itself shows.
+    filter — and resources with none at all — are matched here, over **every**
+    page the list route offers.
+
+    That "every" is the whole point. Sifting one page made the answer depend on
+    where a row happened to sit: `sw resources list -m "Test AI API"` printed
+    *no rows* for a resource that was row 80 of 134. A false negative from a
+    search is indistinguishable from the record not existing, which is the one
+    answer a search must never get wrong.
     """
     terms = [query]
     digits = re.sub(r"\D", "", query)
@@ -2180,9 +2235,11 @@ def _add_list(sub: typer.Typer, resource: resources.Resource) -> None:
             _emit_raw(await client.invoke(resource, "list"))
             return
         if query:
+            # No limit on the walk: a search that stops early is a search that
+            # can answer "no rows" about a record on the next page.
             rows = await _search_rows(client, resource, query, resource.search_fields)
         else:
-            rows = await _list_rows(client, resource)
+            rows = await _list_rows(client, resource, limit=kw["limit"])
         rows = rows[:kw["limit"]]
         _show_rows(rows, resources.columns_for(resource, rows), resource.title)
 

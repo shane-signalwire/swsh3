@@ -66,7 +66,18 @@ def captured(monkeypatch):
             return {"id": resource_id, "updated": True}
         return {}
 
+    async def fake_rest_call(self, method, path, *, params=None, body=None):
+        """The second page of ENVELOPE, and the last.
+
+        Needed because resolving a handle now walks the whole collection — a
+        lookup that stopped at page one could answer "no such number" about a
+        number that exists. `--raw` must still show the *read*, not this.
+        """
+        calls.append({"key": "page", "op": "list", "id": None, "body": None})
+        return {"data": [], "links": {"self": path}}
+
     monkeypatch.setattr(cli.SwshClient, "invoke", fake_invoke)
+    monkeypatch.setattr(cli.SwshClient, "rest_call", fake_rest_call)
     return calls
 
 

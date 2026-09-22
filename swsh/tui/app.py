@@ -482,6 +482,9 @@ class SwshApp(App[None]):
         self.view: str = "home"
         self.resource: res.Resource | None = None
         self.rows: list[dict[str, Any]] = []
+        # True when the walk stopped at PAGE_CAP with pages still to come, so
+        # the title can say `400+` rather than pass a ceiling off as a total.
+        self.rows_capped: bool = False
         self.columns: list[str] = []
         self.loading = False
         self.load_error: str | None = None
@@ -1087,7 +1090,9 @@ class SwshApp(App[None]):
                 hints.append("x for actions")
             suffix = "nothing to list" + (", press " + " or ".join(hints) if hints else "")
         else:
-            suffix = str(len(self.rows))
+            # `134` is a count; `134+` is "at least this many". The pane used to
+            # print the first page's length as though it were the total.
+            suffix = f"{len(self.rows)}{'+' if self.rows_capped else ''}"
         # Advertise what this namespace actually permits, so the key hints in
         # the footer are not promises the API will refuse.
         ops = "".join(c for c in "CRUD" if resource.can(c)) or "read-only"
@@ -1098,10 +1103,31 @@ class SwshApp(App[None]):
         else:
             self._set_title(f"{_cap(resource.title)}  ·  {suffix}  ·  {ops}")
 
+    # The cockpit is scrolled, not paged, so a table that stops at the first
+    # page is a table whose bottom row is a lie about where the data ends. This
+    # walks far enough to be honest for anything a person scrolls through, and
+    # says so in the title when it stops early rather than pretending.
+    PAGE_CAP = 20
+
+    async def _all_rows(self, resource: res.Resource) -> tuple[list[dict[str, Any]], bool]:
+        """Every row the list route offers, and whether the walk was cut short."""
+        payload = await self.client.invoke(resource, "list")
+        rows = res.unwrap(payload, resource.data_key)
+        seen: set[str] = set()
+        for _ in range(self.PAGE_CAP):
+            link = client_next_page(payload)
+            if not link or link in seen:
+                return rows, False
+            seen.add(link)
+            payload = await self.client.rest_call("GET", link)
+            rows.extend(res.unwrap(payload, resource.data_key))
+        return rows, client_next_page(payload) is not None
+
     @work(exclusive=True, group="load")
     async def _load(self, resource: res.Resource) -> None:
         """Fetch a namespace off the event loop and repaint."""
         self.rows = []
+        self.rows_capped = False
         self.load_error = None
         self._drill_parent = None
         if not resource.can_list and not resource.is_singleton:
@@ -1121,8 +1147,7 @@ class SwshApp(App[None]):
                 payload = await self.client.invoke(resource, "read")
                 self.rows = [payload] if isinstance(payload, dict) and payload else []
             else:
-                payload = await self.client.invoke(resource, "list")
-                self.rows = res.unwrap(payload, resource.data_key)
+                self.rows, self.rows_capped = await self._all_rows(resource)
         except SwshError as exc:
             self.load_error = str(exc)
             self._log_line(Text(f"  {resource.key}: {exc}", style="red"))
@@ -1947,6 +1972,7 @@ class SwshApp(App[None]):
 
         self._body_cache.clear()
         self.rows = []
+        self.rows_capped = False
         self.load_error = None
         # The tiles counted the old project; keep none of it.
         self._metrics.clear()
@@ -2421,6 +2447,7 @@ class SwshApp(App[None]):
             # that returns an object (a minted token, an MFA request id) is
             # shown the same way, because that object is the point.
             self.rows = rows
+            self.rows_capped = False
             self.load_error = None
             self._drill = extra.label
             if not extra.on_drill:

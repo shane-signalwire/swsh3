@@ -722,17 +722,31 @@ class TestEveryResourceCanBeReachedFromItsOwnScreen:
             assert bool(r.drill_from) == (not r.standalone), r.key
 
     def test_the_named_parent_exists_and_actually_drills_to_it(self):
+        """Follow the chain to a screen, rather than demanding one hop.
+
+        `brands > campaigns > orders` is three deep, because the routes are:
+        a campaign needs a brand and an order needs a campaign. Requiring the
+        immediate parent to be standalone said that hierarchy was illegal,
+        which is how `orders` ended up standalone with a `list` route it could
+        never call.
+        """
         for r in res.RESOURCES:
             if not r.drill_from:
                 continue
-            parent = res.get(r.drill_from)
-            assert parent is not None, r.key
-            assert parent.standalone, (r.key, r.drill_from)
-            # it has to have a drill for the child to be reachable at all
-            drills = [e for e in parent.extras
-                      if not e.on_drill and spec.get(e.spec_op, parent.api)
-                      and spec.get(e.spec_op, parent.api).method == "GET"]
-            assert drills, (r.key, r.drill_from)
+            seen: list[str] = []
+            node = r
+            while node.drill_from:
+                assert node.drill_from not in seen, (r.key, "cycle", seen)
+                seen.append(node.drill_from)
+                parent = res.get(node.drill_from)
+                assert parent is not None, (r.key, node.drill_from)
+                # each hop has to offer a drill, or the child is unreachable
+                drills = [e for e in parent.extras
+                          if spec.get(e.spec_op, parent.api)
+                          and spec.get(e.spec_op, parent.api).method == "GET"]
+                assert drills, (r.key, node.drill_from)
+                node = parent
+            assert node.standalone, (r.key, "chain ends nowhere", seen)
 
     def test_a_singleton_reads_without_an_identifier(self):
         singletons = [r for r in res.RESOURCES if r.is_singleton]
