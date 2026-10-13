@@ -28,7 +28,7 @@ from rich.panel import Panel
 from rich.text import Text
 from typer._completion_classes import completion_init as _completion_init
 
-from . import __version__, config, prompts, resources, routing, spec, ui
+from . import __version__, config, plugin_host, prompts, resources, routing, spec, ui
 from .client import SwshClient, SwshError, _describe, error_doc_urls
 from .client import next_page as client_next_page
 from .config import (
@@ -57,7 +57,9 @@ class _PrefixGroup(typer.core.TyperGroup):
             return exact
         matches = sorted(n for n in self.list_commands(ctx) if n.startswith(cmd_name))
         if len(matches) == 1:
-            return super().get_command(ctx, matches[0])
+            # Through `self`, not `super()`: at the root the match may be a
+            # plugin, which only `_RootGroup.get_command` knows how to load.
+            return self.get_command(ctx, matches[0])
         if len(matches) > 1:
             ctx.fail(f"'{cmd_name}' is ambiguous: {', '.join(matches)}")
         return None
@@ -68,9 +70,50 @@ class _PrefixGroup(typer.core.TyperGroup):
         return (cmd.name if cmd is not None else name), cmd, rest
 
 
+class _RootGroup(_PrefixGroup):
+    """The `sw` group itself: the built-ins, then any installed plugins.
+
+    Plugins are listed from package metadata and imported only when one is
+    resolved, by name or by prefix. A built-in always wins a name; see
+    ``swsh.plugin_host`` for the rules.
+    """
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        names = super().list_commands(ctx)
+        return names + sorted(plugin_host.discover(self.commands))
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        if cmd_name not in self.commands:
+            plugin = plugin_host.command(cmd_name, self.commands)
+            if plugin is not None:
+                return _with_prefixes(plugin)
+        return super().get_command(ctx, cmd_name)
+
+
+def _with_prefixes(cmd: Any) -> Any:
+    """Give a plugin's groups the prefix matching every built-in group has.
+
+    A plugin builds a plain Typer app, so without this `sw num li` works and
+    `sw deploy li` does not. `_PrefixGroup` adds behaviour and no state, so
+    swapping the class of an already-built group is safe, and idempotent.
+    """
+    if type(cmd) is typer.core.TyperGroup:
+        cmd.__class__ = _PrefixGroup
+    for sub in getattr(cmd, "commands", {}).values():
+        _with_prefixes(sub)
+    return cmd
+
+
+def _builtin_names() -> set[str]:
+    """Every built-in top-level command, which is what a plugin may not take."""
+    # Not `isinstance(root, click.Group)`: Typer builds its groups on its own
+    # vendored click, so that check is always false.
+    return set(getattr(typer.main.get_command(app), "commands", {}))
+
+
 app = typer.Typer(
     name="sw",
-    cls=_PrefixGroup,
+    cls=_RootGroup,
     help="The SignalWire CLI: scriptable commands, a live cockpit (sw sh), "
          "and a callback sink.",
     # Typer's `--install-completion` / `--show-completion` are off: `sw
@@ -143,6 +186,9 @@ logs_app = resource_app("logs")
 profile_app = typer.Typer(cls=_PrefixGroup, name="profile", no_args_is_help=True,
                           help="Manage credential profiles.")
 app.add_typer(profile_app)
+plugins_app = typer.Typer(cls=_PrefixGroup, name="plugins", no_args_is_help=True,
+                          help="See the commands installed packages add to sw.")
+app.add_typer(plugins_app)
 
 
 class Ctx:
@@ -1284,6 +1330,11 @@ async def doctor(client: SwshClient) -> None:
 
     from .events.rewrite import has_pending_restore
 
+    for found in plugin_host.everything(_builtin_names()):
+        if found.status in ("broken", "shadowed"):
+            checks.append((f"plugin {found.name}", False,
+                           f"{found.package} {found.version}: {found.detail}"))
+
     if has_pending_restore():
         checks.append(("pending restore", False,
                        "a previous `sw listen` left rewritten numbers; "
@@ -1406,6 +1457,29 @@ def _render_docs() -> str:
                                  + (f" — {f.help}" if f.help else ""))
             lines.append("")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------- plugins
+
+
+@plugins_app.command("list")
+@with_global_flags
+def plugins_list() -> None:
+    """Every installed plugin: its command, package, version and state.
+
+    A plugin is a package declaring a `swsh.plugins` entry point. Loaded ones
+    run as `sw <name>`; a broken one says why, and a shadowed one lost its name
+    to a built-in or to another plugin and is not run at all.
+    """
+    rows = [f.as_json() for f in plugin_host.everything(_builtin_names())]
+    if not rows and not Ctx.as_json:
+        ui.console.print("[muted]no plugins installed[/muted]")
+        ui.hint('A plugin is a package with a "swsh.plugins" entry point; '
+                "install it into the environment sw runs from.")
+        return
+    ui.emit(rows, as_json=Ctx.as_json, renderer=lambda r: ui.rows_table(
+        r, ["name", "package", "version", "status", "detail"], title="plugins",
+        overflow="fold"))
 
 
 # ----------------------------------------------------------------------- calls

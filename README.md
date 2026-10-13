@@ -560,6 +560,46 @@ coverage-gate row.
 Before adding one, ask whether `sw api` is enough. A one-off call, or an endpoint
 used by one script, does not need a registry entry.
 
+### Writing a plugin
+
+A command that belongs in its own repository (a deploy flow, a team's internal
+tooling) can be a **plugin**: a separate package that adds `sw <name>` when it
+is installed next to sw. It declares an entry point in the `swsh.plugins`
+group, and the entry point's name is the command:
+
+```toml
+[project.entry-points."swsh.plugins"]
+deploy = "swsh_deploy:plugin"
+```
+
+```python
+import typer
+from swsh.plugin import Plugin, SwshClient, coro, emit
+
+app = typer.Typer(help="Deploy agents to SignalWire.")
+
+@app.command()
+@coro
+async def push(client: SwshClient, name: str) -> None:
+    emit(await client.whoami())
+
+plugin = Plugin(app=app)
+```
+
+That is `sw deploy push NAME`, with the global flags, credential resolution,
+error reporting and prefix matching every built-in command has. Install it into
+the environment sw runs from: `uv tool install swsh --with swsh-deploy`, or
+`pip install` into the same venv. A working example is in
+[`examples/swsh-hello`](examples/swsh-hello).
+
+The rules: import only from `swsh.plugin`, whose contract is versioned by
+`API_VERSION`. A built-in always keeps its name, and a plugin that collides is
+reported as shadowed rather than loaded. A plugin is imported only when it is
+used. One that fails to load breaks only its own command, which explains why.
+`sw plugins list` shows what is installed and in what state, and `sw doctor`
+reports any plugin that cannot run. Plugins add commands only; they cannot add
+anything to the cockpit yet.
+
 ### Contributing
 
 CI runs the suite, `ruff` and the secret audit on 3.11 through 3.14 for every
@@ -575,6 +615,7 @@ the tool rather than reading the source.
 ```
 swsh/
   cli.py          Typer app; every registry resource becomes a command group
+  plugin.py       the API plugins import; plugin_host.py finds and loads them
   resources.py    THE REGISTRY — 54 resources, 52 of them spec-driven REST
   routing.py      get --full: resolve a row's live handler and follow it
   client.py       one client; invoke(resource, op, ...) dispatches by transport
@@ -585,6 +626,7 @@ swsh/
   agentlab.py     a local AI agent, tunnelled and wired into Call Fabric
   events/         RELAY tap, webhook sink, adaptive poller, bus, tunnel
   tui/            the cockpit
+examples/         swsh-hello, a minimal plugin
 scripts/          audits and live probes
 tests/            pytest; respx for HTTP, app.run_test() for the cockpit
 test_plans/       manual QA checklists

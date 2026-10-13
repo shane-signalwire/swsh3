@@ -54,6 +54,14 @@ is `sw sh`.
 
 ### Added
 
+- **Plugins.** A separate package can add a top-level command, `sw <name>`, by
+  declaring a `swsh.plugins` entry point that points at a `swsh.plugin.Plugin`.
+  Plugin commands get the same `--json`, `--raw`, `--profile`, `--timeout`,
+  credentials and error reporting as the built-ins, and are listed under their
+  own "Plugins" panel in `sw --help`. `sw plugins list` shows each installed
+  plugin and its state. A plugin that is broken, or that collides with a
+  built-in, never breaks the rest of `sw`. See "Writing a plugin" in the README
+  and `examples/swsh-hello`.
 - **Any named row can be addressed by name**: `sw sip get fsdemo`,
   `sw swml delete "after hours"`. 36 of 54 resources; the rest are logs, minted
   tokens and drills, which have no name to type.
